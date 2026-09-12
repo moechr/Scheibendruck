@@ -1,0 +1,5 @@
+Starter {starter}
+Serie {serie}
+Schuss {schuss}
+Gau Memm.
+LP Auflage

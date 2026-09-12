@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.pyc
+
+# Laufzeit-/Bediener-Daten (kein Quellcode)
+state/*.json
+
+# PyInstaller Build-Artefakte (siehe build_exe.bat)
+build_tmp/
+dist/
+*.spec
+*.exe

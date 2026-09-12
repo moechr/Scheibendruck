@@ -1,0 +1,6 @@
+<<{verein}
+{name}
+Stand:  {stand}
+Serie:  {serie}
+Schuss: {schuss}
+LG Auflage
