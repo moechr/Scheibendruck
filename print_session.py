@@ -24,8 +24,8 @@ blockierend, nur Windows):
         Scheiben zurueckspringen (fragt interaktiv, wie viele)
     q   Session beenden (der aktuelle Druck laeuft normal zu Ende)
 "Abbrechen" (w/b) heisst konkret: ESC @ verwirft, was der Drucker schon
-empfangen aber noch nicht gedruckt hat (siehe _cancel_and_eject in
-print_session.py) - bereits physisch gedruckte Zeilen bleiben aber auf
+empfangen aber noch nicht gedruckt hat (siehe SlipPrinter.cancel_and_eject in
+session_engine.py) - bereits physisch gedruckte Zeilen bleiben aber auf
 dem Papier stehen, daher lohnt sich schnelles Reagieren.
 Der aktuelle Fortschritt (welche Scheibe als naechstes drankommt) wird
 gespeichert, damit ein Abbruch/Neustart an der richtigen Stelle
@@ -42,7 +42,6 @@ Werten aus dem letzten Lauf als Vorschlag).
 """
 import argparse
 import configparser
-import json
 import sys
 import time
 from pathlib import Path
@@ -53,29 +52,19 @@ from rich.panel import Panel
 from rich.prompt import Prompt, IntPrompt, Confirm
 from rich.table import Table
 
-from tmu950 import (
-    TMU950,
-    SerialConfig,
-    cmd_init,
-    cmd_select_paper,
-    cmd_set_eject_length,
-    cmd_form_feed,
-    cmd_line_spacing,
-)
 from printjob import load_profile, render
 from matchplan import generate_plan, plan_fingerprint, plan_summary, plan_condensed
-
-# Ordner, in dem config.ini/templates/state erwartet werden. Als normales
-# Python-Skript ist das der Ordner dieser Datei; als mit PyInstaller
-# gebautes .exe ("--onefile") liegt der Code aber in einem entpackten
-# Temp-Ordner, nicht neben der .exe - dort zaehlt stattdessen der Ordner der
-# .exe selbst (sys.executable), siehe build_exe.bat/README.
-if getattr(sys, "frozen", False):
-    APP_DIR = Path(sys.executable).resolve().parent
-else:
-    APP_DIR = Path(__file__).resolve().parent
-
-DEFAULT_CONFIG = APP_DIR / "config.ini"
+from session_engine import (
+    APP_DIR,
+    DEFAULT_CONFIG,
+    PLAN_KEYS,
+    SlipPrinter,
+    Timing,
+    load_plan_state,
+    print_row_for,
+    save_plan_state,
+    state_path_for,
+)
 
 try:
     import msvcrt
@@ -102,20 +91,6 @@ def progress_bar(done: int, total: int, width: int = 24) -> str:
     filled = min(width, int(width * done / total))
     bar = "█" * filled + "░" * (width - filled)
     return f"[{bar}] {done}/{total}"
-
-
-def load_plan_state(path: Path) -> dict:
-    if path.exists():
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            return {}
-    return {}
-
-
-def save_plan_state(path: Path, data: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def ask_plan_config_simple(console: Console, saved: dict) -> dict:
@@ -293,22 +268,6 @@ def ask_plan_config(console: Console, saved: dict, force_simple: bool = False) -
     return ask_plan_config_simple(console, saved)
 
 
-def print_row_for(plan: list, idx: int) -> dict:
-    """
-    Baut das Dict, mit dem plan[idx] tatsaechlich gerendert/gedruckt wird:
-    der Vereinsname steht auf der ERSTEN Scheibe JEDER Serie (also bei
-    jedem Stand- ODER Serienwechsel neu), auf allen weiteren Scheiben
-    derselben Serie bleibt er leer. Wird sowohl von der
-    Scheibe-fuer-Scheibe-Vorschau (run_sheet_preview) als auch vom
-    eigentlichen Druck in main() verwendet, damit beide exakt denselben
-    Text zeigen/drucken.
-    """
-    row = plan[idx]
-    prev = plan[idx - 1] if idx > 0 else None
-    is_first_of_serie = prev is None or (prev["stand"], prev["serie"]) != (row["stand"], row["serie"])
-    return dict(row) if is_first_of_serie else {**row, "verein": ""}
-
-
 def run_sheet_preview(plan: list, template_lines: list, line_width: int,
                       start_pos: int = 0) -> Optional[int]:
     """
@@ -462,19 +421,19 @@ def parse_args():
     parser.add_argument("--dry-run", action="store_true",
                          help="Ohne Drucker durchspielen (zeigt nur an, was gedruckt wuerde)")
 
-    parser.add_argument("--pause", type=float, default=0.3,
+    parser.add_argument("--pause", type=float, default=Timing.pause,
                          help="Sekunden Pause nach erkanntem Zyklus-Ende (Default: 0.3)")
-    parser.add_argument("--max-wait", type=float, default=None,
+    parser.add_argument("--max-wait", type=float, default=Timing.max_wait,
                          help="Maximale Wartezeit pro Scheibe auf das automatische Fertig-Signal, "
                               "danach wird trotzdem weitergemacht. Ohne Angabe: UNBEGRENZT warten "
                               "(kein Timeout) - der Bediener bestimmt durchs Einlegen selbst das Tempo.")
-    parser.add_argument("--poll-interval", type=float, default=0.15,
+    parser.add_argument("--poll-interval", type=float, default=Timing.poll_interval,
                          help="Sekunden zwischen den Status-Abfragen waehrend des Wartens (Default: 0.15)")
-    parser.add_argument("--poll-timeout", type=float, default=0.2,
+    parser.add_argument("--poll-timeout", type=float, default=Timing.poll_timeout,
                          help="Timeout je Status-Abfrage in Sekunden (Default: 0.2)")
-    parser.add_argument("--min-wait", type=float, default=1.0,
+    parser.add_argument("--min-wait", type=float, default=Timing.min_wait,
                          help="Mindestwartezeit vor Akzeptanz des Fertig-Signals (Default: 1.0)")
-    parser.add_argument("--calib-time", type=float, default=1.5,
+    parser.add_argument("--calib-time", type=float, default=Timing.calib_time,
                          help="Sekunden zur Kalibrierung des Ruhezustands vor der ersten Scheibe "
                               "(Default: 1.5)")
     parser.add_argument("--debug-status", action="store_true",
@@ -508,7 +467,7 @@ def main() -> None:
         raise SystemExit(1)
     template_lines = template_path.read_text(encoding="utf-8").splitlines()
 
-    state_path = config_path.parent / "state" / f"{args.profile.lower()}_plan_state.json"
+    state_path = state_path_for(config_path, args.profile)
     saved = load_plan_state(state_path)
 
     have_all_cli = all([args.club_a, args.club_b, args.paarungen])
@@ -523,9 +482,7 @@ def main() -> None:
         shots_per_sheet = shots_per_sheet_override or saved.get("shots_per_sheet") or profile["shots_per_sheet"]
         config_ready = True
 
-    elif args.start_index is None and saved and all(
-            k in saved for k in ("club_a", "club_b", "num_paarungen", "start_club",
-                                  "series_count", "shots_per_serie", "shots_per_sheet")):
+    elif args.start_index is None and saved and all(k in saved for k in PLAN_KEYS):
         # Unfertige gespeicherte Session? Erst fragen, ob GENAU DORT
         # fortgesetzt werden soll - ohne die Einstellungen neu abzufragen
         # (siehe ask_resume_unfinished). So wird ein nicht fertig
@@ -651,30 +608,16 @@ def main() -> None:
         return
 
     printer = None
-    baseline_b3 = None
     if not args.dry_run:
-        cfg = SerialConfig(
-            port=args.port,
-            baudrate=profile["baudrate"],
-            parity=profile["parity"],
-            xonxoff=profile["xonxoff"],
-            rtscts=profile["rtscts"],
-        )
-        printer = TMU950(cfg)
+        printer = SlipPrinter(args.port, profile, Timing(
+            pause=args.pause, max_wait=args.max_wait, poll_interval=args.poll_interval,
+            poll_timeout=args.poll_timeout, min_wait=args.min_wait, calib_time=args.calib_time,
+        ))
         printer.open()
-        printer.write(cmd_init())
-        if profile["line_spacing"]:
-            printer.write(cmd_line_spacing(profile["line_spacing"]))
-        if profile["eject_length"]:
-            printer.write(cmd_set_eject_length(profile["eject_length"]))
-        printer.write(cmd_select_paper(4))
-        time.sleep(0.2)
 
         with console.status("[bold cyan]Kalibriere Ruhezustand der Slip-Station "
                              "(bitte jetzt nichts einlegen) ...[/bold cyan]", spinner="dots"):
-            baseline_b3 = printer.calibrate_slip_baseline(
-                poll_timeout=args.poll_timeout, calib_time=args.calib_time
-            )
+            baseline_b3 = printer.calibrate()
         console.print(f"[dim]Ruhezustand kalibriert (Referenzwert 0x{baseline_b3:02X}).[/dim]")
     else:
         console.print("[dim](--dry-run: kein Drucker wird angesprochen)[/dim]")
@@ -686,34 +629,6 @@ def main() -> None:
             "start_club": start_club, "series_count": series_count,
             "shots_per_serie": shots_per_serie, "shots_per_sheet": shots_per_sheet,
         }
-
-    def _cancel_and_eject() -> None:
-        """
-        Laufenden Druckauftrag so gut wie moeglich abbrechen und die
-        (verkorkste) Scheibe auswerfen. Der TM-U950 ist alt genug, dass er
-        NICHT Teil des modernen ESC/POS-Echtzeitbefehlssatzes ist (z.B. kein
-        dokumentierter "DLE DC4"-Sofort-Abbruch) - verifiziert gegen Epsons
-        aktuelle ESC/POS-Referenz, die den TM-U950 gar nicht mehr auflistet.
-        Was dokumentiert und nutzbar ist: ESC @ (siehe cmd_init) "loescht die
-        Daten im Druckpuffer" - also alles, was der Drucker schon empfangen,
-        aber noch NICHT gedruckt hat, wird verworfen. Bereits physisch
-        gedruckte Zeilen auf der Scheibe lassen sich dadurch NICHT
-        rueckgaengig machen - je frueher man 'w'/'b' drueckt, desto weniger
-        Schrott landet noch auf dem Papier. Danach wird die (Rest-)Scheibe
-        wie gewohnt per Form-Feed ausgeworfen. Reagiert der Drucker gar
-        nicht mehr (echter Papierstau), muss die Scheibe von Hand entnommen
-        werden (Deckel oeffnen / Papierloese-Hebel der Scheibenstation -
-        siehe Drucker-Handbuch "Removing Jammed Paper").
-        """
-        printer.write(cmd_init())
-        if profile["line_spacing"]:
-            printer.write(cmd_line_spacing(profile["line_spacing"]))
-        if profile["eject_length"]:
-            printer.write(cmd_set_eject_length(profile["eject_length"]))
-        printer.write(cmd_select_paper(4))
-        time.sleep(0.2)
-        printer.write(cmd_form_feed())
-        time.sleep(args.pause)
 
     printed = 0
     retries_total = 0
@@ -755,10 +670,7 @@ def main() -> None:
             retry_this_sheet = False
 
             if not args.dry_run:
-                printer.write(cmd_select_paper(4))
-                time.sleep(0.2)
-                printer.print_text(text + "\n", encoding=profile["encoding"])
-                printer.write(cmd_form_feed())
+                printer.send_sheet(text)
 
                 def _on_tick(resp: bytes, _console=console):
                     if args.debug_status and resp:
@@ -772,14 +684,7 @@ def main() -> None:
                     "nichts noetig) ...[/bold cyan]",
                     spinner="dots",
                 ):
-                    status, elapsed = printer.wait_for_slip_cycle(
-                        baseline_b3,
-                        poll_interval=args.poll_interval,
-                        poll_timeout=args.poll_timeout,
-                        max_wait=args.max_wait,
-                        min_wait=args.min_wait,
-                        on_tick=_on_tick,
-                    )
+                    status, elapsed = printer.wait_cycle(on_tick=_on_tick)
 
                 if status == "done":
                     console.print(f"[dim]  Zyklus erkannt (nach {elapsed:.1f}s) - weiter.[/dim]")
@@ -794,12 +699,12 @@ def main() -> None:
                 elif status == "hotkey:w":
                     console.print("[yellow]Breche laufenden Druck ab, werfe die Scheibe aus und "
                                    "wiederhole dieselbe Scheibe ...[/yellow]")
-                    _cancel_and_eject()
+                    printer.cancel_and_eject()
                     retries_total += 1
                     retry_this_sheet = True
                 elif status == "hotkey:b":
                     console.print("[yellow]Breche laufenden Druck ab und werfe die Scheibe aus ...[/yellow]")
-                    _cancel_and_eject()
+                    printer.cancel_and_eject()
                     n = IntPrompt.ask(
                         "Um wie viele Scheiben zurueckspringen? "
                         "(1 = nur diese Scheibe erneut, 2 = auch die davor, ...)",

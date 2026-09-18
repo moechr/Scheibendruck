@@ -17,14 +17,17 @@ Schnittstelle — gedacht z. B. für automatisiertes fortlaufendes Durchnummerie
 | `list_ports.py` | Zeigt verfügbare COM-Ports an |
 | `test_connection.py` | Phase 1: Verbindung testen, Status abfragen, Testzeile drucken |
 | `calibrate_width.py` | Kalibrierungs-Testdruck für `line_width` |
-| `print_session.py` | **Die eigentliche Anwendung für den Wettkampf-Betrieb** (siehe Abschnitt 6) |
+| `print_gui.py` | **Die eigentliche Anwendung für den Wettkampf-Betrieb**: grafische Oberfläche (siehe Abschnitt 7) |
+| `print_session.py` | Dieselbe Anwendung als Konsolen-Variante mit Kommandozeilen-Optionen (siehe Abschnitt 7, „Alternativ“) |
+| `session_engine.py` | Gemeinsame Drucklogik von GUI und Konsole: Drucker vorbereiten, Scheibe senden, Zyklus abwarten, Abbrechen, Fortschritt speichern |
 | `matchplan.py` | Erzeugt die komplette Druckreihenfolge (Stand/Serie/Schuss/Verein) für zwei Vereine im Wechsel |
 | `printjob.py` | Gemeinsame Logik: Profil aus `config.ini` laden, Template-Zeilen rendern |
-| `build_exe.bat` | Baut aus `print_session.py` eine einzelne `TMU950_Druck.exe` (siehe Abschnitt 7) - kein Python/pip mehr noetig, um die Anwendung zu benutzen |
+| `build_exe.bat` | Baut aus `print_gui.py` eine einzelne, per Doppelklick startbare `TMU950_Druck.exe` (siehe Abschnitt 11) - kein Python/pip mehr noetig, um die Anwendung zu benutzen |
+| `version_info.txt` | Datei-Eigenschaften (Version, Beschreibung) fuer die `.exe`, von `build_exe.bat` eingebunden |
 | `config.ini` | Profile `LP` (Luftpistole) und `LG` (Luftgewehr): Baudrate, Eject-Length, Zeilenbreite. (Die `[counter:...]`-Abschnitte sind Altlasten des frueheren, inzwischen ersetzten Zaehler-Systems und werden von `print_session.py` nicht mehr gelesen.) |
 | `templates/lp_paarung.txt`, `templates/lg_paarung.txt` | Die tatsaechlich verwendeten Vorlagen (Verein/Paarung/Stand/Serie/Schuss) |
 | `templates/lp_beispiel.txt`, `templates/lg_beispiel.txt` | Alte Beispiel-Vorlagen aus dem fruehen Zaehler-System - nicht mehr in Benutzung, nur als Referenz |
-| `state/` | Wird automatisch angelegt, enthaelt pro Profil den gespeicherten Druckfortschritt (`lp_plan_state.json`/`lg_plan_state.json`) |
+| `state/` | Wird automatisch angelegt, enthaelt pro Profil den gespeicherten Druckfortschritt (`lp_plan_state.json`/`lg_plan_state.json`) sowie die zuletzt in der Oberfläche gewählte Disziplin/Vorlage/COM-Port (`gui_settings.json`) |
 | `print_counter.py`, `counter_state.py` | **Alt/unbenutzt**: fruehere Batch-/Zaehler-Version, vor der Umstellung auf das Stand/Serie/Schuss-Modell. Bleibt nur als Referenz liegen. |
 
 ## 1. Hardware: USB-Seriell-Wandler
@@ -113,7 +116,7 @@ Zoll × 6 ≈ n). Den ermittelten Wert dann in `config.ini` unter
 
 ## 6. Der Wettkampf-Ablauf (Stand/Serie/Schuss/Verein)
 
-Statt unabhängiger Zähler druckt `print_session.py` eine **komplette,
+Statt unabhängiger Zähler druckt die Anwendung eine **komplette,
 im Voraus berechnete Druckreihenfolge** für einen Wettkampf zwischen zwei
 Vereinen (nachgebaut aus der bisherigen Excel-Logik in
 `WM_LIGA_Transfer.xlsm`, siehe `matchplan.py`):
@@ -165,7 +168,75 @@ entfernt) — alle anderen Zeilen werden wie gehabt **rechtsbündig** auf
 `line_width` (aus `config.ini`) ausgerichtet. Feste Textzeilen ohne
 Platzhalter (wie `LP Auflage`) bleiben unverändert stehen.
 
-## 7. Wettkampf drucken: `print_session.py`
+## 7. Wettkampf drucken
+
+Am einfachsten per Doppelklick auf **`TMU950_Druck.exe`** (siehe Abschnitt 11)
+bzw. mit Python:
+
+```
+python print_gui.py
+```
+
+Es öffnet sich ein Fenster, das von oben nach unten ausgefüllt wird:
+
+1. **Drucker** – Disziplin (Profil `LP`/`LG` aus `config.ini`), Vorlage
+   (wird passend zur Disziplin vorgewählt), COM-Port (die Liste zeigt die
+   angeschlossenen Anschlüsse, „Suchen“ aktualisiert sie; ein
+   USB-Seriell-Wandler wird automatisch bevorzugt). Mit **Testmodus** läuft
+   alles ohne Drucker durch – nichts wird gedruckt und kein Fortschritt
+   gespeichert.
+2. **Wettkampf** – Verein A/B, Anzahl Paarungen, wer an Stand 1 beginnt,
+   Schuss pro Scheibe, Serien je Stand, Schuss je Serie. Darunter steht
+   sofort, wie viele Scheiben/Stände das ergibt.
+3. **Drucken** – ab welcher Scheibe gedruckt wird (normalerweise 1, bei einem
+   unterbrochenen Druck automatisch die nächste offene Scheibe, siehe
+   Abschnitt 10), dann **„Druck starten“**. Vor dem Start kommt noch eine
+   Zusammenfassung zur Bestätigung.
+
+Rechts aktualisieren sich bei jeder Änderung die **Stand-für-Stand-Übersicht**
+(Status erledigt/Start/offen) und die **Vorschau**, die jede Scheibe genau so
+zeigt, wie sie gedruckt wird (siehe Abschnitt 9). Die zuletzt gedruckten
+Wettkampf-Werte sowie Disziplin, Vorlage und COM-Port werden beim nächsten
+Start automatisch vorbelegt.
+
+Während des Drucks zeigt der **Druckstatus** unten rechts, welche Scheibe als
+Nächstes eingelegt werden muss – bei einem **neuen Stand** farbig hervorgehoben
+(gelb, wenn dabei auch der Verein wechselt). Die Knöpfe „Scheibe wiederholen“,
+„Zurückspringen …“ und „Druck beenden“ entsprechen den Tasten `w`/`b`/`q`
+(siehe Abschnitt 8) und funktionieren auch per Tastatur. Das Register
+„Protokoll“ listet alle Ereignisse mit Uhrzeit.
+
+Beim Aufruf mit Parametern werden Port, Vorlage und Profil vorbelegt (so
+funktionieren bestehende Verknüpfungen weiter):
+
+```
+TMU950_Druck.exe COM5 templates\lp_paarung.txt --profile LP
+```
+
+**Start per Verknüpfung** (z. B. auf dem Desktop) funktioniert von überall –
+das Programm sucht `config.ini`, `templates\` und `state\` immer in seinem
+eigenen Ordner, der Eintrag „Ausführen in“ spielt keine Rolle. Praktisch ist
+je eine Verknüpfung pro Disziplin, im Feld *Ziel* z. B.:
+
+```
+"D:\...\TMU950_Druck.exe" --profile LG
+```
+
+Ohne `.exe`, direkt mit installiertem Python (samt `pip install -r
+requirements.txt`), als Ziel `pyw.exe` verwenden – das startet ohne
+schwarzes Konsolenfenster:
+
+```
+C:\Windows\pyw.exe "D:\...\print_gui.py" --profile LP
+```
+
+Der Anzeigename einer Disziplin in der Auswahlliste kommt aus `title = ...`
+im jeweiligen `[profile:...]`-Abschnitt der `config.ini`.
+
+### Alternativ: Konsolen-Variante `print_session.py`
+
+Dieselbe Anwendung gibt es weiterhin für die Eingabeaufforderung (benötigt
+Python mit `pip install -r requirements.txt`):
 
 ```
 python print_session.py COM5 templates\lp_paarung.txt
@@ -234,6 +305,12 @@ werden, damit es weitergeht) folgende Tasten jederzeit aktiv:
   laufenden Druckauftrag ebenfalls sofort ab und springt dann zurück.
 - **`q`** — Session beenden (der aktuelle Druck läuft noch normal zu Ende).
 
+In der Oberfläche (`print_gui.py`/`.exe`) gibt es dafür die drei Knöpfe im
+Druckstatus; die Tasten `w`/`b`/`q` funktionieren dort ebenfalls. Bei
+„Zurückspringen“ fragt ein kleines Fenster nach der Anzahl und zeigt dabei an,
+mit welcher Scheibe es danach weitergeht. „Druck beenden“ fragt zur Sicherheit
+noch einmal nach.
+
 **Laufenden Druck abbrechen (`w`/`b`)**: Der TM-U950 ist alt genug, dass er
 NICHT Teil des modernen ESC/POS-Echtzeitbefehlssatzes ist — es gibt dafür
 keinen dokumentierten Sofort-Abbruch-Befehl wie bei neueren Epson-Druckern
@@ -248,8 +325,15 @@ Jammed Paper").
 
 ## 9. Vorschau vor dem Druck
 
-Nach der Stand-Übersicht bietet die App an, jede einzelne Scheibe **genau
-so, wie sie gedruckt wird**, in einer Vollbild-Vorschau durchzublättern:
+In der **Oberfläche** ist die Vorschau immer sichtbar und zeigt jede Scheibe
+**genau so, wie sie gedruckt wird**: mit ◀/▶ (oder Bild-Auf/-Ab) blättern,
+eine Scheibennummer eintippen oder einen Stand in der Übersicht anklicken.
+**„Ab dieser Scheibe drucken“** übernimmt die angezeigte Scheibe als
+Startpunkt. Während des Drucks folgt die Vorschau automatisch der aktuellen
+Scheibe.
+
+In der **Konsolen-Variante** bietet die App nach der Stand-Übersicht an, jede
+einzelne Scheibe in einer Vollbild-Vorschau durchzublättern:
 
 ```
 Pfeiltasten / Bild-Auf/-Ab / [j][k]   eine Scheibe vor/zurück
@@ -288,12 +372,22 @@ Der Druckfortschritt wird nach jeder einzelnen Scheibe in
 - Für eine einzelne, gezielte Scheibe (unabhängig vom gespeicherten
   Fortschritt) hilft weiterhin `--start-index N`.
 
+In der **Oberfläche** passiert das ohne Rückfragen: Beim Öffnen werden die
+Werte des gespeicherten Fortschritts vorbelegt, und bei einem unterbrochenen
+Druck steht „Start ab Scheibe“ schon auf der nächsten offenen Scheibe (blauer
+Hinweis „Unterbrochener Druck erkannt“). Werden die Einstellungen geändert,
+warnt ein Hinweis, dass der unterbrochene Druck beim Start verworfen würde –
+„Unterbrochenen Druck übernehmen“ stellt die gespeicherten Werte wieder her.
+Ist der Wettkampf schon vollständig gedruckt, beginnt ein erneuter Start bei
+Scheibe 1 (mit Hinweis). Eine gezielte Startscheibe lässt sich jederzeit bei
+„Start ab Scheibe“ eintragen oder über die Vorschau wählen.
+
 ## 11. Als eigenständige `.exe` bauen (kein Python nötig)
 
 Damit am Schießstand nicht erst Python + Abhängigkeiten installiert werden
-müssen, lässt sich aus `print_session.py` mit
+müssen, lässt sich aus der Oberfläche `print_gui.py` mit
 [PyInstaller](https://pyinstaller.org/) eine einzelne `TMU950_Druck.exe`
-bauen, die direkt startbar ist.
+bauen, die per **Doppelklick** startet (ohne Konsolenfenster).
 
 **Einmalig bauen** (auf einem PC mit Python — danach läuft die `.exe` auch
 auf PCs OHNE installiertes Python):
@@ -302,25 +396,49 @@ auf PCs OHNE installiertes Python):
 build_exe.bat
 ```
 
-Das Skript installiert PyInstaller und alle Abhängigkeiten und baut die
-`.exe` direkt in diesen Ordner (neben `config.ini` und `templates\`). Danach:
+Das Skript legt eine eigene Build-Umgebung `build_tmp\venv` an, installiert
+dort PyInstaller und alle Abhängigkeiten und baut die `.exe` direkt in diesen
+Ordner (neben `config.ini` und `templates\`). Danach genügt ein
+**Doppelklick auf `TMU950_Druck.exe`** — alles Weitere wird im Fenster
+eingestellt (siehe Abschnitt 7), ohne dass Python auf dem jeweiligen Rechner
+installiert sein muss. Für den Alltag am Stand am besten eine Verknüpfung auf
+den Desktop legen (Rechtsklick auf die `.exe` → *Weitere Optionen anzeigen* →
+*Senden an* → *Desktop (Verknüpfung erstellen)*). **Wichtig:** `config.ini`,
+`templates\` und `state\` müssen im selben Ordner wie die `.exe` bleiben —
+die `.exe` sucht sie immer dort, egal von wo aus sie gestartet wird.
 
-```
-TMU950_Druck.exe COM5 templates\lp_paarung.txt
-```
+Die Konsolen-Variante `print_session.py` ist nicht in der `.exe` enthalten und
+läuft weiterhin mit Python (siehe Abschnitt 7, „Alternativ“).
 
-funktioniert genau wie `python print_session.py ...` — nur ohne dass Python
-auf dem jeweiligen Rechner installiert sein muss. **Wichtig:** `config.ini`,
-`templates\` und `state\` müssen dabei im selben Ordner wie die `.exe`
-bleiben (die Vorlage per Doppelklick auf die `.exe` selbst zu starten,
-funktioniert dafür am einfachsten — dann stimmt der Arbeitsordner
-automatisch).
-
-Nach einem Update von `print_session.py` (z. B. durch eine neue Version aus
+Nach einem Update von `print_gui.py` (z. B. durch eine neue Version aus
 diesem Chat) einfach `build_exe.bat` erneut ausführen — die alte `.exe` wird
 dabei überschrieben. `build_exe.bat`/`build_tmp\` selbst müssen nicht mit auf
 andere Rechner kopiert werden, nur die fertige `TMU950_Druck.exe` plus
 `config.ini`, `templates\` (und, falls vorhanden, `state\`).
+
+**Virenscanner-Fehlalarm (`Trojan:Win32/Wacatac.B!ml`)**: Windows Defender
+hat eine mit dem Standard-PyInstaller gebaute `.exe` nach dem Herunterladen
+und Entpacken als Trojaner in Quarantäne verschoben. Das ist ein bekannter
+Fehlalarm: Das `!ml` steht für eine reine Machine-Learning-Einschätzung, und
+Schadsoftware nutzt denselben vorkompilierten PyInstaller-Bootloader. Deshalb
+kompiliert `build_exe.bat` den Bootloader selbst und bettet
+`version_info.txt` als Datei-Eigenschaften ein. Dafür müssen die
+[Visual Studio Build Tools](https://visualstudio.microsoft.com/de/visual-cpp-build-tools/)
+mit der Workload „Desktopentwicklung mit C++" installiert sein. Fehlen sie,
+baut das Skript mit einer Warnung trotzdem, aber mit dem Standard-Bootloader.
+(Wurden die Build Tools erst nachträglich installiert: `build_tmp\` löschen
+und neu bauen.)
+
+Eine Garantie gegen Fehlalarme ist das nicht, nur eine signierte `.exe`
+wäre das. Meldet Defender die `.exe` trotzdem:
+
+- In Windows-Sicherheit → Schutzverlauf den Eintrag öffnen →
+  *Aktionen* → *Auf Gerät zulassen* (nur für die selbst gebaute `.exe`!).
+- Die Datei als Fehlalarm melden:
+  <https://www.microsoft.com/wdsi/filesubmission>
+- Die `.exe` per USB-Stick statt per Download/Mail/Cloud übertragen oder
+  `build_exe.bat` direkt auf dem Ziel-PC ausführen. Dateien ohne
+  „Aus dem Internet"-Markierung prüft Defender deutlich weniger streng.
 
 ## 12. Bekannte Stolpersteine
 
