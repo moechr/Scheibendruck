@@ -3,4 +3,3 @@
 Stand:  {stand}
 Serie:  {serie}
 Schuss: {schuss}
-LP Auflage
