@@ -61,8 +61,8 @@ from session_engine import (
     SlipPrinter,
     Timing,
     load_plan_state,
-    print_row_for,
     save_plan_state,
+    sheet_values,
     state_path_for,
 )
 
@@ -107,8 +107,8 @@ def ask_plan_config_simple(console: Console, saved: dict) -> dict:
     start_club = Prompt.ask(f"Wer beginnt an Stand 1: {club_a} oder {club_b}?",
                              choices=[club_a, club_b], default=saved.get("start_club_name", club_a))
     start_club_code = "A" if start_club == club_a else "B"
-    shots_per_sheet = IntPrompt.ask("Schuss pro Scheibe (1 oder 2)",
-                                     default=saved.get("shots_per_sheet", 2), choices=["1", "2"])
+    shots_per_sheet = IntPrompt.ask("Schuss pro Scheibe (1, 2 oder 5)",
+                                     default=saved.get("shots_per_sheet", 2), choices=["1", "2", "5"])
     series_count = IntPrompt.ask("Serien je Stand", default=saved.get("series_count", 4))
     shots_per_serie = IntPrompt.ask("Schuss je Serie", default=saved.get("shots_per_serie", 10))
     return {
@@ -215,9 +215,9 @@ def ask_plan_config_tui(saved: dict) -> dict:
     start_club = ask_button("Wer beginnt?", "Wer beginnt an Stand 1?\n(Pfeiltasten/Tab waehlen, Enter bestaetigt)",
                              start_buttons)
 
-    sheet_buttons = [("1 Schuss pro Scheibe", 1), ("2 Schuss pro Scheibe", 2)]
-    if saved.get("shots_per_sheet") == 1:
-        sheet_buttons.reverse()
+    sheet_buttons = [("1 Schuss pro Scheibe", 1), ("2 Schuss pro Scheibe", 2), ("5 Schuss pro Scheibe", 5)]
+    # zuletzt benutzten Wert nach vorn, damit er schon fokussiert ist
+    sheet_buttons.sort(key=lambda b: b[1] != saved.get("shots_per_sheet", 2))
     shots_per_sheet = ask_button("Schuss pro Scheibe", "Wie viele Schuss pro Scheibe?", sheet_buttons)
 
     series_count = ask_int("Serien je Stand", "Serien je Stand:", saved.get("series_count", 4))
@@ -269,7 +269,7 @@ def ask_plan_config(console: Console, saved: dict, force_simple: bool = False) -
 
 
 def run_sheet_preview(plan: list, template_lines: list, line_width: int,
-                      start_pos: int = 0) -> Optional[int]:
+                      start_pos: int = 0, freitext: str = "") -> Optional[int]:
     """
     Vollbild-Scheibe-fuer-Scheibe-Vorschau (prompt_toolkit): zeigt fuer jede
     Scheibe GENAU den Text, der spaeter gedruckt wird, in einem Rahmen (wie
@@ -298,7 +298,7 @@ def run_sheet_preview(plan: list, template_lines: list, line_width: int,
 
     def get_body_text() -> str:
         idx = state["pos"]
-        card_lines = render(template_lines, print_row_for(plan, idx), line_width).split("\n")
+        card_lines = render(template_lines, sheet_values(plan, idx, freitext), line_width).split("\n")
         width = max(line_width, max((len(l) for l in card_lines), default=0)) + 4
         border = "+" + "-" * (width - 2) + "+"
         out = [border]
@@ -407,7 +407,11 @@ def parse_args():
     parser.add_argument("--series-count", type=int, default=None, help="Serien je Stand (Default: 4)")
     parser.add_argument("--shots-per-serie", type=int, default=None, help="Schuss je Serie (Default: 10)")
     parser.add_argument("--shots-per-sheet", type=int, default=None,
-                         help="Ueberschreibt shots_per_sheet aus config.ini fuer diesen Lauf")
+                         help="Schuss pro Scheibe (z.B. 1, 2 oder 5), ueberschreibt shots_per_sheet "
+                              "aus config.ini fuer diesen Lauf")
+    parser.add_argument("--freitext", default=None,
+                         help="Text fuer die Freitext-Zeile ({freitext} in der Vorlage), z.B. "
+                              "'LP Auflage'. Default: freitext aus config.ini")
 
     parser.add_argument("--start-index", type=int, default=None,
                          help="An dieser Scheibe (1-basiert) starten/fortsetzen, statt dem "
@@ -453,6 +457,7 @@ def main() -> None:
 
     profile = load_profile(args.profile, cp, config_path)
     shots_per_sheet_override = args.shots_per_sheet
+    freitext = args.freitext if args.freitext is not None else profile["freitext"]
 
     template_path = Path(args.template)
     if not template_path.exists() and not template_path.is_absolute():
@@ -535,7 +540,8 @@ def main() -> None:
         f"Paarungen: [bold]{num_paarungen}[/bold]   Beginnt: [bold]"
         f"{club_a if start_club == 'A' else club_b}[/bold]\n"
         f"Serien/Stand: {series_count}   Schuss/Serie: {shots_per_serie}   "
-        f"Schuss/Scheibe: {shots_per_sheet}   {plan_summary(plan)}"
+        f"Schuss/Scheibe: {shots_per_sheet}   {plan_summary(plan)}\n"
+        f"Freitext: {freitext or '(leer)'}"
         + (f"\nFortsetzung ab Scheibe {index + 1}/{len(plan)}" if 0 < index < len(plan) else ""),
         title="TM-U950 Drucksession (automatisch, Paarungen)", style="cyan",
     ))
@@ -594,7 +600,7 @@ def main() -> None:
             if Confirm.ask("Scheibe-fuer-Scheibe-Vorschau ansehen (mit Pfeiltasten durchblaettern)?",
                             default=True):
                 start_from = run_sheet_preview(plan, template_lines, profile["line_width"],
-                                                start_pos=index)
+                                                start_pos=index, freitext=freitext)
                 if start_from is not None:
                     index = start_from
                     console.print(f"[yellow]Aus der Vorschau: Druck beginnt ab Scheibe "
@@ -642,14 +648,14 @@ def main() -> None:
             new_stand = previous_row is None or row["stand"] != previous_row["stand"]
             new_verein = previous_row is None or row["verein"] != previous_row["verein"]
 
-            # print_row_for() sorgt dafuer, dass der Vereinsname nur auf der
+            # sheet_values() (ueber print_row_for) sorgt dafuer, dass der Vereinsname nur auf der
             # ERSTEN Scheibe jeder Serie steht (danach leer, bis zur naechsten
             # Serie/zum naechsten Stand) - 'row' selbst bleibt unveraendert
             # (wird u.a. fuer die Info-Anzeige/Tabelle gebraucht, wo der
             # Vereinsname immer angezeigt werden soll). Dieselbe Funktion
             # baut auch die Scheibe-fuer-Scheibe-Vorschau (run_sheet_preview),
             # damit Vorschau und Druck identisch sind.
-            text = render(template_lines, print_row_for(plan, index), profile["line_width"])
+            text = render(template_lines, sheet_values(plan, index, freitext), profile["line_width"])
 
             console.rule(f"[bold]{progress_bar(index + 1, len(plan))}[/bold]")
             if new_stand:

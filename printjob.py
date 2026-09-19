@@ -31,6 +31,7 @@ def load_profile(profile_name: str, cp: configparser.ConfigParser, config_path: 
         "eject_length": opt_int(p, "eject_length"),
         "line_spacing": opt_int(p, "line_spacing"),
         "encoding": p.get("encoding", fallback="cp850"),
+        "freitext": p.get("freitext", fallback=""),
         "line_width": p.getint("line_width", fallback=40),
         "shots_per_sheet": p.getint("shots_per_sheet", fallback=1),
         "counter_file": p.get("counter_file", fallback=f"state/{profile_name.lower()}_counters.json"),
@@ -97,7 +98,9 @@ def render(template_lines: list, values: dict, line_width: int) -> str:
                 f"Unbekannter Platzhalter {{{exc.args[0]}}} im Template. "
                 f"Verfuegbar: {', '.join(sorted(mapping))}"
             )
-        if left_align or not line_width:
+        if not line.strip():
+            out.append("")  # Leerzeile nicht mit Leerzeichen auffuellen (spart Druckkopf-Weg)
+        elif left_align or not line_width:
             out.append(line)
         else:
             out.append(line.rjust(line_width))

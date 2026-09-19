@@ -7,12 +7,14 @@ der grafischen Oberflaeche (print_gui.py) genutzt werden kann:
 
   - Programmordner (APP_DIR) und gespeicherter Druckfortschritt
     (state/<profil>_plan_state.json)
-  - print_row_for(): welcher Text tatsaechlich auf eine Scheibe kommt
+  - print_row_for()/sheet_values(): welche Werte tatsaechlich auf eine
+    Scheibe kommen
   - SlipPrinter: Drucker vorbereiten, eine Scheibe senden, das Ende des
     Einlege-/Druck-/Auswurfzyklus abwarten, laufenden Druck abbrechen
   - SimulatedPrinter: dasselbe ohne Drucker (Testmodus der GUI)
-  - PlanRun: druckt einen Plan Scheibe fuer Scheibe (inkl. Wiederholen/
-    Zurueckspringen/Beenden) und meldet den Fortschritt per Callback
+  - PlanRun: druckt fertig gerenderte Scheiben nacheinander (inkl.
+    Wiederholen/Zurueckspringen/Beenden) und meldet den Fortschritt per
+    Callback - fuer den Wettkampf genauso wie fuer den Einzeldruck
 """
 from __future__ import annotations
 
@@ -34,7 +36,6 @@ from tmu950 import (
     cmd_form_feed,
     cmd_line_spacing,
 )
-from printjob import render
 
 # Ordner, in dem config.ini/templates/state erwartet werden. Als normales
 # Python-Skript ist das der Ordner dieser Datei; als mit PyInstaller
@@ -82,9 +83,20 @@ def print_row_for(plan: list, idx: int) -> dict:
     zeigen/drucken.
     """
     row = plan[idx]
+    if "stand" not in row:  # Einzeldruck (matchplan.generate_single_plan): kein Stand/Serie
+        return dict(row)
     prev = plan[idx - 1] if idx > 0 else None
     is_first_of_serie = prev is None or (prev["stand"], prev["serie"]) != (row["stand"], row["serie"])
     return dict(row) if is_first_of_serie else {**row, "verein": ""}
+
+
+def sheet_values(plan: list, idx: int, freitext: str = "") -> dict:
+    """
+    Alle Platzhalter-Werte fuer die Vorlage von Scheibe plan[idx]: die
+    Plan-Zeile (siehe print_row_for) plus {freitext} (z.B. "LP Auflage")
+    und {nr}/{anzahl} (laufende Scheibennummer/Gesamtzahl).
+    """
+    return {**print_row_for(plan, idx), "freitext": freitext, "nr": idx + 1, "anzahl": len(plan)}
 
 
 @dataclass
@@ -223,9 +235,10 @@ class SimulatedPrinter:
 
 class PlanRun:
     """
-    Druckt 'plan' ab 'start_index' Scheibe fuer Scheibe - dieselbe Abfolge
-    wie in print_session.py, aber ohne eigene Bildschirmausgabe, damit sie
-    in einem Hintergrund-Thread laufen kann (siehe print_gui.py).
+    Druckt 'sheets' (den fertig gerenderten Text jeder Scheibe) ab
+    'start_index' nacheinander - dieselbe Abfolge wie in print_session.py,
+    aber ohne eigene Bildschirmausgabe, damit sie in einem Hintergrund-Thread
+    laufen kann (siehe print_gui.py).
 
     Bedienung von aussen (thread-sicher) per request():
         "w"  laufenden Druck abbrechen, Scheibe auswerfen, dieselbe erneut
@@ -242,15 +255,12 @@ class PlanRun:
     Zuruecksprung aufgerufen (None = nichts speichern, z.B. im Testmodus).
     """
 
-    def __init__(self, plan: List[dict], template_lines: List[str], line_width: int,
-                 printer, start_index: int,
+    def __init__(self, sheets: List[str], printer, start_index: int,
                  on_event: Callable[[str, dict], None],
                  ask_back: Callable[[int], int],
                  save_progress: Optional[Callable[[int], None]] = None,
                  pause: float = Timing.pause):
-        self.plan = plan
-        self.template_lines = template_lines
-        self.line_width = line_width
+        self.sheets = sheets
         self.printer = printer
         self.start_index = start_index
         self.on_event = on_event
@@ -282,7 +292,7 @@ class PlanRun:
             self.save_progress(index)
 
     def run(self) -> dict:
-        plan = self.plan
+        sheets = self.sheets
         index = self.start_index
         printed = 0
         retries = 0
@@ -294,10 +304,9 @@ class PlanRun:
             baseline = self.printer.calibrate()
             self._emit("log", text=f"Ruhezustand kalibriert (Referenzwert 0x{baseline:02X}).")
 
-            while index < len(plan) and not self._stop.is_set():
-                text = render(self.template_lines, print_row_for(plan, index), self.line_width)
+            while index < len(sheets) and not self._stop.is_set():
                 self._emit("sheet", index=index, retries=retries)
-                self.printer.send_sheet(text)
+                self.printer.send_sheet(sheets[index])
 
                 status, elapsed = self.printer.wait_cycle(on_tick=self._on_tick)
                 if status == "hotkey:q":
@@ -335,5 +344,5 @@ class PlanRun:
         finally:
             self.printer.close()
 
-        return {"printed": printed, "retries": retries, "index": index, "total": len(plan),
-                "complete": index >= len(plan)}
+        return {"printed": printed, "retries": retries, "index": index, "total": len(sheets),
+                "complete": index >= len(sheets)}

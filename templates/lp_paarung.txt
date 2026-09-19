@@ -3,3 +3,4 @@
 Stand:  {stand}
 Serie:  {serie}
 Schuss: {schuss}
+{freitext}

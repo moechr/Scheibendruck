@@ -1,6 +1,6 @@
-<<{verein}
-{name}
-Stand:  {stand}
+<<{freitext1}
+{freitext2}
+
 Serie:  {serie}
 Schuss: {schuss}
 {freitext}

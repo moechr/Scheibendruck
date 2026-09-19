@@ -73,6 +73,36 @@ def generate_plan(club_a: str, club_b: str, num_paarungen: int,
     return rows
 
 
+def generate_single_plan(text1: str = "", text2: str = "", series_count: int = 1,
+                         shots_per_serie: int = 10, shots_per_sheet: int = 1,
+                         text1_first_only: bool = False, text2_first_only: bool = False) -> List[Dict]:
+    """
+    Druckreihenfolge fuer den Einzeldruck (z.B. am Schiessabend): die Baender
+    fuer EINE Person - wie ein einzelner Stand im Wettkampf 'series_count'
+    Serien zu je 'shots_per_serie' Schuss, aufgeteilt in Baender zu je
+    'shots_per_sheet' Schuss. Die Schuss-Nummern beginnen in jeder Serie neu
+    (bei 10 Schuss und 5 Schuss pro Scheibe: Serie 1 1-5, 6-10, Serie 2
+    1-5, ...).
+
+    'text1'/'text2' sind freie Texte (Platzhalter {freitext1}/{freitext2},
+    z.B. Verein und Name). Mit textN_first_only=True steht der jeweilige Text
+    nur auf dem ersten Band jeder Serie, sonst auf jedem. Eine Zeile je Band:
+        {"freitext1": str, "freitext2": str, "serie": int, "schuss": str}
+    """
+    if series_count < 1 or shots_per_serie < 1:
+        raise ValueError("series_count und shots_per_serie muessen >= 1 sein")
+    if shots_per_sheet < 1:
+        raise ValueError("shots_per_sheet muss >= 1 sein")
+    rows: List[Dict] = []
+    for serie in range(1, series_count + 1):
+        for start in range(1, shots_per_serie + 1, shots_per_sheet):
+            first = start == 1
+            rows.append({"freitext1": text1 if first or not text1_first_only else "",
+                         "freitext2": text2 if first or not text2_first_only else "",
+                         "serie": serie, "schuss": _schuss_label(start, shots_per_serie, shots_per_sheet)})
+    return rows
+
+
 def plan_fingerprint(club_a: str, club_b: str, num_paarungen: int, shots_per_sheet: int,
                       start_club: str, series_count: int, shots_per_serie: int) -> str:
     """Kurze, stabile Kennung der Plan-Parameter - dient dazu, beim Fortsetzen

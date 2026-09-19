@@ -1,17 +1,23 @@
 """
 print_gui.py
 ------------
-Grafische Oberflaeche fuer den Wettkampf-Scheibendruck mit dem TM-U950 -
-derselbe Ablauf wie print_session.py, aber per Formular und Maus statt
-Kommandozeile und Eingabemasken:
+Grafische Oberflaeche fuer den Scheibendruck mit dem TM-U950 - derselbe
+Ablauf wie print_session.py, aber per Formular und Maus statt Kommandozeile
+und Eingabemasken:
 
   1. Drucker:   Disziplin (Profil aus config.ini), Vorlage, COM-Port,
                 optional Testmodus ohne Drucker
-  2. Wettkampf: Vereine, Paarungen, wer beginnt, Schuss pro Scheibe,
-                Serien je Stand, Schuss je Serie - Stand-Uebersicht und
-                Scheiben-Vorschau rechts aktualisieren sich sofort
-  3. Drucken:   ab welcher Scheibe (ein unterbrochener Druck wird
-                automatisch erkannt und fortgesetzt), dann "Druck starten"
+  2. Was wird gedruckt?
+       Wettkampf:   Vereine, Paarungen, wer beginnt, Schuss pro Scheibe,
+                    Serien je Stand, Schuss je Serie - Stand-Uebersicht und
+                    Scheiben-Vorschau rechts aktualisieren sich sofort
+       Einzeldruck: Baender fuer eine einzelne Person (z.B. am
+                    Schiessabend): Freitext 1/2 (je auf jedem Band oder
+                    nur bei Serienbeginn), Serien a Schuss je Serie, Schuss
+                    pro Scheibe
+     Dazu fuer beide "Freitext unten" (z.B. "LP Auflage", {freitext} in der Vorlage)
+  3. Drucken:   im Wettkampf ab welcher Scheibe (ein unterbrochener Druck
+                wird automatisch erkannt und fortgesetzt), dann "Druck starten"
 
 Waehrend des Drucks laeuft alles automatisch weiter (Einlegen/Druck/
 Auswurf werden erkannt, siehe session_engine.py). Per Knopf oder Taste:
@@ -36,7 +42,7 @@ from pathlib import Path
 from tkinter import font as tkfont
 from tkinter import messagebox, ttk
 
-from matchplan import generate_plan, plan_condensed, plan_fingerprint
+from matchplan import generate_plan, generate_single_plan, plan_condensed, plan_fingerprint
 from printjob import load_profile, render
 from session_engine import (
     APP_DIR,
@@ -49,6 +55,7 @@ from session_engine import (
     load_plan_state,
     print_row_for,
     save_plan_state,
+    sheet_values,
     state_path_for,
 )
 
@@ -65,6 +72,13 @@ BANNER_STYLES = {
 HINT_COLORS = {"normal": "#4b5563", "info": "#1d4ed8", "warn": "#b45309", "error": "#b91c1c"}
 PAPER_BG = "#fffdf4"
 
+MODE_MATCH = "wettkampf"
+MODE_SINGLE = "einzel"
+MODES = (MODE_MATCH, MODE_SINGLE)  # Reihenfolge = Register im Abschnitt "Was wird gedruckt?"
+TEMPLATE_SUFFIX = {MODE_MATCH: "paarung", MODE_SINGLE: "einzel"}  # Vorlage <profil>_<suffix>.txt
+
+SHOTS_PER_SHEET_CHOICES = (1, 2, 5)
+
 # Erlaubte Bereiche der Zahlenfelder (Minimum, Maximum)
 LIMIT_PAARUNGEN = (1, 50)
 LIMIT_SERIES = (1, 20)
@@ -73,12 +87,16 @@ LIMIT_SHOTS_SERIE = (1, 100)
 DEFAULT_FORM = {"club_a": "Verein A", "club_b": "Verein B", "num_paarungen": 5,
                 "start_club": "A", "series_count": 4, "shots_per_serie": 10}
 
-# Beispielzeile, um eine Vorlage vor dem Druck auf unbekannte Platzhalter zu pruefen
-SAMPLE_ROW = {"stand": 1, "serie": 1, "schuss": "1-2", "verein": "Verein", "name": "Paarung 1 - V"}
+
+def sample_values(mode: str) -> dict:
+    """Beispielwerte, um eine Vorlage vor dem Druck auf unbekannte Platzhalter zu pruefen."""
+    plan = (generate_plan("Verein A", "Verein B", 1) if mode == MODE_MATCH
+            else generate_single_plan("Text 1", "Text 2"))
+    return sheet_values(plan, 0, "Freitext")
 
 
 class ConfigError(ValueError):
-    """Ungueltige Eingabe im Wettkampf-Formular (der Text wird direkt angezeigt)."""
+    """Ungueltige Eingabe im Formular (der Text wird direkt angezeigt)."""
 
 
 def enable_dpi_awareness() -> None:
@@ -103,6 +121,7 @@ class BackJumpDialog(tk.Toplevel):
         self.app = app
         self.index = index
         self.result = 1
+        unit, units = app.units()
         self.title("Zurückspringen")
         self.transient(app.root)
         self.resizable(False, False)
@@ -110,22 +129,23 @@ class BackJumpDialog(tk.Toplevel):
         px = app.px
         body = ttk.Frame(self, padding=px(16))
         body.grid(sticky="nsew")
-        ttk.Label(body, text=f"Scheibe {index + 1} wurde abgebrochen und ausgeworfen.\n"
-                             f"Um wie viele Scheiben zurückspringen?",
+        ttk.Label(body, text=f"{unit} {index + 1} wurde abgebrochen und ausgeworfen.\n"
+                             f"Um wie viele {units} zurückspringen?",
                   font=app.bold_font).grid(row=0, column=0, columnspan=2, sticky="w")
 
         self.var = tk.StringVar(value="1")
         spin = ttk.Spinbox(body, from_=1, to=index + 1, textvariable=self.var, width=6,
                            font=app.big_font)
         spin.grid(row=1, column=0, sticky="w", pady=(px(10), px(4)))
-        ttk.Label(body, text="1 = nur diese Scheibe erneut, 2 = auch die davor, …",
+        this, before = ("dieses", "das") if unit == "Band" else ("diese", "die")
+        ttk.Label(body, text=f"1 = nur {this} {unit} erneut, 2 = auch {before} davor, …",
                   style="Hint.TLabel").grid(row=1, column=1, sticky="w", padx=(px(10), 0))
         self.target = ttk.Label(body, wraplength=px(460))
         self.target.grid(row=2, column=0, columnspan=2, sticky="w", pady=(px(4), px(12)))
 
         buttons = ttk.Frame(body)
         buttons.grid(row=3, column=0, columnspan=2, sticky="e")
-        ttk.Button(buttons, text="Nur diese Scheibe erneut", command=self._cancel).grid(row=0, column=0)
+        ttk.Button(buttons, text="Nur diese erneut", command=self._cancel).grid(row=0, column=0)
         ttk.Button(buttons, text="Zurückspringen", command=self._ok,
                    default="active").grid(row=0, column=1, padx=(px(8), 0))
 
@@ -159,8 +179,7 @@ class BackJumpDialog(tk.Toplevel):
                                   foreground=HINT_COLORS["error"])
             return
         target = self.index - (n - 1)
-        self.target.configure(text=f"Weiter mit Scheibe {target + 1} von {len(self.app.plan)}: "
-                                   f"{self.app.sheet_desc(target)}",
+        self.target.configure(text=f"Weiter mit {self.app.sheet_desc(target)}",
                               foreground=HINT_COLORS["info"])
 
     def _ok(self) -> None:
@@ -198,7 +217,9 @@ class App:
                 self.profiles[f"{name} – {title}" if title else name] = name
         self.template_paths = {}  # Anzeige-Text -> Pfad
         self.port_desc = {}       # COM-Port -> Beschreibung
+        self.freitexts = {}       # Profil -> zuletzt benutzter Freitext
 
+        self.mode = MODE_MATCH
         self.profile_name = None
         self.profile = {}
         self.saved = {}
@@ -212,8 +233,8 @@ class App:
         self.preview_pos = 0
 
         self.run = None
+        self.run_info = {}
         self.worker = None
-        self.run_dry = False
         self.current_index = 0
         self.run_retries = 0
         self.quit_requested = False
@@ -223,9 +244,10 @@ class App:
         self._suppress_preview_var = False
 
         self.profile_var = tk.StringVar()
-        self.template_var = tk.StringVar()
+        self.template_vars = {MODE_MATCH: tk.StringVar(), MODE_SINGLE: tk.StringVar()}
         self.port_var = tk.StringVar()
         self.dry_run_var = tk.BooleanVar(value=False)
+        self.freitext_var = tk.StringVar()
         self.club_a_var = tk.StringVar()
         self.club_b_var = tk.StringVar()
         self.paarungen_var = tk.StringVar()
@@ -233,6 +255,11 @@ class App:
         self.sheet_var = tk.StringVar(value="2")
         self.series_var = tk.StringVar()
         self.shots_serie_var = tk.StringVar()
+        self.single_text_vars = (tk.StringVar(), tk.StringVar())          # Freitext 1/2
+        self.single_first_vars = (tk.BooleanVar(), tk.BooleanVar())       # ... nur bei Serienbeginn
+        self.single_series_var = tk.StringVar()
+        self.single_shots_serie_var = tk.StringVar()
+        self.single_sheet_var = tk.StringVar(value="2")
         self.start_at_var = tk.StringVar(value="1")
         self.preview_var = tk.StringVar(value="1")
 
@@ -240,8 +267,11 @@ class App:
         self._build_ui()
 
         for var in (self.club_a_var, self.club_b_var, self.paarungen_var, self.start_club_var,
-                    self.sheet_var, self.series_var, self.shots_serie_var):
+                    self.sheet_var, self.series_var, self.shots_serie_var,
+                    *self.single_text_vars, *self.single_first_vars,
+                    self.single_series_var, self.single_shots_serie_var, self.single_sheet_var):
             var.trace_add("write", self._schedule_refresh)
+        self.freitext_var.trace_add("write", lambda *_: self._on_freitext_changed())
         self.start_at_var.trace_add("write", lambda *_: self._on_start_at_changed())
         self.preview_var.trace_add("write", lambda *_: self._on_preview_var())
         self.port_var.trace_add("write", lambda *_: self._update_port_hint())
@@ -289,7 +319,7 @@ class App:
         left = ttk.Frame(root, padding=(px(10), px(10), px(8), px(10)))
         left.grid(row=0, column=0, sticky="ns")
         self._build_printer_frame(left).grid(row=0, column=0, sticky="ew")
-        self._build_match_frame(left).grid(row=1, column=0, sticky="ew", pady=(px(8), 0))
+        self._build_content_frame(left).grid(row=1, column=0, sticky="ew", pady=(px(8), 0))
         self._build_start_frame(left).grid(row=2, column=0, sticky="ew", pady=(px(8), 0))
 
         right = ttk.Frame(root, padding=(px(2), px(10), px(10), px(10)))
@@ -304,6 +334,30 @@ class App:
         ttk.Label(parent, text=text).grid(row=row, column=0, sticky="w", padx=(0, self.px(10)),
                                           pady=self.px(2))
 
+    def _sheet_radios(self, parent, var: tk.StringVar) -> ttk.Frame:
+        """Auswahl "Schuss pro Scheibe" (1/2/5) nebeneinander."""
+        f = ttk.Frame(parent)
+        for i, n in enumerate(SHOTS_PER_SHEET_CHOICES):
+            rb = ttk.Radiobutton(f, text=str(n), variable=var, value=str(n))
+            rb.grid(row=0, column=i, padx=(0 if i == 0 else self.px(16), 0))
+            self.inputs.append(rb)
+        return f
+
+    def _series_row(self, parent, series_var: tk.StringVar, shots_var: tk.StringVar) -> ttk.Frame:
+        """Eingabe "[4] à [10] Schuss" (Serien und Schuss je Serie) in einer Zeile."""
+        px = self.px
+        f = ttk.Frame(parent)
+        series = ttk.Spinbox(f, from_=LIMIT_SERIES[0], to=LIMIT_SERIES[1],
+                             textvariable=series_var, width=4)
+        series.grid(row=0, column=0)
+        ttk.Label(f, text="à").grid(row=0, column=1, padx=px(6))
+        shots = ttk.Spinbox(f, from_=LIMIT_SHOTS_SERIE[0], to=LIMIT_SHOTS_SERIE[1],
+                            textvariable=shots_var, width=4)
+        shots.grid(row=0, column=2)
+        ttk.Label(f, text="Schuss").grid(row=0, column=3, padx=(px(6), 0))
+        self.inputs += [series, shots]
+        return f
+
     def _build_printer_frame(self, parent) -> ttk.LabelFrame:
         px = self.px
         f = ttk.LabelFrame(parent, text=" 1  Drucker ", padding=px(8))
@@ -315,8 +369,9 @@ class App:
         self.profile_cb.grid(row=0, column=1, columnspan=2, sticky="ew")
         self.profile_cb.bind("<<ComboboxSelected>>", lambda e: self._on_profile_selected())
 
+        # Zeigt die Vorlage des gerade gewaehlten Druckmodus (siehe _apply_mode)
         self._row_label(f, 1, "Vorlage")
-        self.template_cb = ttk.Combobox(f, textvariable=self.template_var, state="readonly")
+        self.template_cb = ttk.Combobox(f, textvariable=self.template_vars[MODE_MATCH], state="readonly")
         self.template_cb.grid(row=1, column=1, columnspan=2, sticky="ew")
         self.template_cb.bind("<<ComboboxSelected>>", lambda e: self._on_template_selected())
 
@@ -335,16 +390,38 @@ class App:
         self.inputs += [self.profile_cb, self.template_cb, self.port_cb, self.port_btn, self.dry_cb]
         return f
 
-    def _build_match_frame(self, parent) -> ttk.LabelFrame:
+    def _build_content_frame(self, parent) -> ttk.LabelFrame:
         px = self.px
-        f = ttk.LabelFrame(parent, text=" 2  Wettkampf ", padding=px(8))
+        f = ttk.LabelFrame(parent, text=" 2  Was wird gedruckt? ", padding=(px(8), px(6), px(8), px(8)))
+        f.columnconfigure(1, weight=1)
+
+        self.mode_nb = ttk.Notebook(f)
+        self.mode_nb.grid(row=0, column=0, columnspan=2, sticky="ew")
+        self.mode_nb.add(self._build_match_tab(self.mode_nb), text="  Wettkampf  ")
+        self.mode_nb.add(self._build_single_tab(self.mode_nb), text="  Einzeldruck  ")
+        self.mode_nb.bind("<<NotebookTabChanged>>", lambda e: self._on_mode_changed())
+
+        ttk.Label(f, text="Freitext unten").grid(row=1, column=0, sticky="w", padx=(0, px(10)),
+                                           pady=(px(8), 0))
+        freitext = ttk.Entry(f, textvariable=self.freitext_var)
+        freitext.grid(row=1, column=1, sticky="ew", pady=(px(8), 0))
+
+        self.summary = ttk.Label(f, style="Summary.TLabel", wraplength=px(320))
+        self.summary.grid(row=2, column=0, columnspan=2, sticky="w", pady=(px(6), 0))
+
+        self.inputs.append(freitext)
+        return f
+
+    def _build_match_tab(self, parent) -> ttk.Frame:
+        px = self.px
+        f = ttk.Frame(parent, padding=px(8))
         f.columnconfigure(1, weight=1)
 
         self._row_label(f, 0, "Verein A")
-        club_a = ttk.Entry(f, textvariable=self.club_a_var, width=26)
+        club_a = ttk.Entry(f, textvariable=self.club_a_var, width=24)
         club_a.grid(row=0, column=1, sticky="ew")
         self._row_label(f, 1, "Verein B")
-        club_b = ttk.Entry(f, textvariable=self.club_b_var, width=26)
+        club_b = ttk.Entry(f, textvariable=self.club_b_var, width=24)
         club_b.grid(row=1, column=1, sticky="ew")
 
         self._row_label(f, 2, "Paarungen")
@@ -364,46 +441,70 @@ class App:
         self.rb_b.grid(row=1, column=0, sticky="w")
 
         self._row_label(f, 4, "Schuss pro Scheibe")
-        shf = ttk.Frame(f)
-        shf.grid(row=4, column=1, sticky="w")
-        rb1 = ttk.Radiobutton(shf, text="1", variable=self.sheet_var, value="1")
-        rb1.grid(row=0, column=0)
-        rb2 = ttk.Radiobutton(shf, text="2", variable=self.sheet_var, value="2")
-        rb2.grid(row=0, column=1, padx=(px(16), 0))
+        self._sheet_radios(f, self.sheet_var).grid(row=4, column=1, sticky="w")
 
         self._row_label(f, 5, "Serien je Stand")
-        series = ttk.Spinbox(f, from_=LIMIT_SERIES[0], to=LIMIT_SERIES[1],
-                             textvariable=self.series_var, width=5)
-        series.grid(row=5, column=1, sticky="w")
-        self._row_label(f, 6, "Schuss je Serie")
-        shots = ttk.Spinbox(f, from_=LIMIT_SHOTS_SERIE[0], to=LIMIT_SHOTS_SERIE[1],
-                            textvariable=self.shots_serie_var, width=5)
-        shots.grid(row=6, column=1, sticky="w")
+        self._series_row(f, self.series_var, self.shots_serie_var).grid(row=5, column=1, sticky="w")
 
-        self.summary = ttk.Label(f, style="Summary.TLabel", wraplength=px(320))
-        self.summary.grid(row=7, column=0, columnspan=2, sticky="w", pady=(px(8), 0))
-
-        self.inputs += [club_a, club_b, paarungen, self.rb_a, self.rb_b, rb1, rb2, series, shots]
+        self.inputs += [club_a, club_b, paarungen, self.rb_a, self.rb_b]
         return f
+
+    def _build_single_tab(self, parent) -> ttk.Frame:
+        px = self.px
+        f = ttk.Frame(parent, padding=px(8))
+        f.columnconfigure(1, weight=1)
+
+        # Freitext 1/2 (Zeile 1 links, Zeile 2 rechts), je auf jedem Band oder
+        # nur bei Serienbeginn. Am Schiessabend: Text tippen, Enter - fertig;
+        # nach dem Druck steht der Cursor wieder in dem Feld, aus dem gestartet wurde.
+        entries = []
+        for i, (text_var, first_var) in enumerate(zip(self.single_text_vars, self.single_first_vars)):
+            self._row_label(f, 2 * i, f"Freitext {i + 1}")
+            entry = ttk.Entry(f, textvariable=text_var, width=24)
+            entry.grid(row=2 * i, column=1, sticky="ew")
+            entry.bind("<Return>", lambda e: self._start())
+            first = ttk.Checkbutton(f, text="nur bei Serienbeginn", variable=first_var)
+            first.grid(row=2 * i + 1, column=1, sticky="w", pady=(0, px(2)))
+            entries.append(entry)
+            self.inputs += [entry, first]
+        self.single_entries = tuple(entries)
+        self.single_focus = entries[0]
+
+        self._row_label(f, 4, "Serien")
+        self._series_row(f, self.single_series_var, self.single_shots_serie_var).grid(
+            row=4, column=1, sticky="w")
+
+        self._row_label(f, 5, "Schuss pro Scheibe")
+        self._sheet_radios(f, self.single_sheet_var).grid(row=5, column=1, sticky="w")
+
+        ttk.Label(f, text="Enter in einem Textfeld druckt sofort.",
+                  style="Hint.TLabel", wraplength=px(300)).grid(
+            row=6, column=0, columnspan=2, sticky="w", pady=(px(6), 0))
+        return f
+
+    def _focus_single_entry(self) -> None:
+        """Cursor ins zuletzt benutzte Textfeld, Inhalt markiert - bereit fuer die naechste Person."""
+        self.single_focus.focus_set()
+        self.single_focus.selection_range(0, "end")
 
     def _build_start_frame(self, parent) -> ttk.LabelFrame:
         px = self.px
         f = ttk.LabelFrame(parent, text=" 3  Drucken ", padding=px(8))
         f.columnconfigure(0, weight=1)
 
-        row = ttk.Frame(f)
-        row.grid(row=0, column=0, sticky="ew")
-        ttk.Label(row, text="Start ab Scheibe").grid(row=0, column=0, padx=(0, px(8)))
-        self.start_sb = ttk.Spinbox(row, from_=1, to=1, textvariable=self.start_at_var, width=6)
+        self.start_row = ttk.Frame(f)
+        self.start_row.grid(row=0, column=0, sticky="ew", pady=(0, px(8)))
+        ttk.Label(self.start_row, text="Start ab Scheibe").grid(row=0, column=0, padx=(0, px(8)))
+        self.start_sb = ttk.Spinbox(self.start_row, from_=1, to=1, textvariable=self.start_at_var, width=6)
         self.start_sb.grid(row=0, column=1)
-        self.total_label = ttk.Label(row)
+        self.total_label = ttk.Label(self.start_row)
         self.total_label.grid(row=0, column=2, padx=(px(6), 0))
-        self.from_start_btn = ttk.Button(row, text="Von vorne",
+        self.from_start_btn = ttk.Button(self.start_row, text="Von vorne",
                                          command=lambda: self.start_at_var.set("1"))
         self.from_start_btn.grid(row=0, column=3, padx=(px(10), 0))
 
         self.start_hint = ttk.Label(f, wraplength=px(320))
-        self.start_hint.grid(row=1, column=0, sticky="w", pady=(px(8), 0))
+        self.start_hint.grid(row=1, column=0, sticky="w")
         self.adopt_btn = ttk.Button(f, text="Unterbrochenen Druck übernehmen",
                                     command=self._adopt_saved)
         self.adopt_btn.grid(row=2, column=0, sticky="w", pady=(px(6), 0))
@@ -421,13 +522,20 @@ class App:
 
     def _build_notebook(self, parent) -> ttk.Notebook:
         px = self.px
-        nb = ttk.Notebook(parent)
+        nb = self.overview_nb = ttk.Notebook(parent)
 
         tab = ttk.Frame(nb, padding=px(6))
         tab.columnconfigure(0, weight=1)
         tab.rowconfigure(0, weight=1)
+
+        # Wettkampf: Stand fuer Stand
+        self.match_view = ttk.Frame(tab)
+        self.match_view.grid(row=0, column=0, sticky="nsew")
+        self.match_view.columnconfigure(0, weight=1)
+        self.match_view.rowconfigure(0, weight=1)
         columns = ("stand", "verein", "name", "sheets", "schuss", "status")
-        self.tree = ttk.Treeview(tab, columns=columns, show="headings", selectmode="browse", height=6)
+        self.tree = ttk.Treeview(self.match_view, columns=columns, show="headings",
+                                 selectmode="browse", height=6)
         for col, text, width, anchor in (
                 ("stand", "Stand", 60, "center"), ("verein", "Verein", 150, "w"),
                 ("name", "Paarung", 130, "w"), ("sheets", "Scheiben", 75, "center"),
@@ -437,11 +545,31 @@ class App:
         self.tree.tag_configure("done", foreground="#9ca3af")
         self.tree.tag_configure("current", background="#fff3b0")
         self.tree.grid(row=0, column=0, sticky="nsew")
-        vsb = ttk.Scrollbar(tab, orient="vertical", command=self.tree.yview)
+        vsb = ttk.Scrollbar(self.match_view, orient="vertical", command=self.tree.yview)
         vsb.grid(row=0, column=1, sticky="ns")
         self.tree.configure(yscrollcommand=vsb.set)
         self.tree.bind("<<TreeviewSelect>>", lambda e: self._on_tree_select())
-        nb.add(tab, text="Übersicht: Stand für Stand")
+
+        # Einzeldruck: wer hat heute schon Baender bekommen (nur fuer diese Sitzung)
+        self.single_view = ttk.Frame(tab)
+        self.single_view.grid(row=0, column=0, sticky="nsew")
+        self.single_view.columnconfigure(0, weight=1)
+        self.single_view.rowconfigure(0, weight=1)
+        columns = ("time", "name", "series", "bands", "status")
+        self.single_tree = ttk.Treeview(self.single_view, columns=columns, show="headings",
+                                        selectmode="none", height=6)
+        for col, text, width, anchor in (
+                ("time", "Uhrzeit", 80, "center"), ("name", "Freitext 1 / 2", 200, "w"),
+                ("series", "Serien", 100, "center"), ("bands", "Bänder", 70, "center"),
+                ("status", "Status", 190, "w")):
+            self.single_tree.heading(col, text=text, anchor=anchor)
+            self.single_tree.column(col, width=px(width), minwidth=px(50), anchor=anchor)
+        self.single_tree.tag_configure("problem", foreground=HINT_COLORS["warn"])
+        self.single_tree.grid(row=0, column=0, sticky="nsew")
+        vsb = ttk.Scrollbar(self.single_view, orient="vertical", command=self.single_tree.yview)
+        vsb.grid(row=0, column=1, sticky="ns")
+        self.single_tree.configure(yscrollcommand=vsb.set)
+        nb.add(tab, text="Übersicht")
 
         tab = ttk.Frame(nb, padding=px(6))
         tab.columnconfigure(0, weight=1)
@@ -466,7 +594,8 @@ class App:
         nav.columnconfigure(5, weight=1)
         self.prev_btn = ttk.Button(nav, text="◀", width=3, command=lambda: self._preview_step(-1))
         self.prev_btn.grid(row=0, column=0)
-        ttk.Label(nav, text="Scheibe").grid(row=0, column=1, padx=(px(8), px(4)))
+        self.preview_unit = ttk.Label(nav, text="Scheibe")
+        self.preview_unit.grid(row=0, column=1, padx=(px(8), px(4)))
         self.preview_sb = ttk.Spinbox(nav, from_=1, to=1, textvariable=self.preview_var, width=6)
         self.preview_sb.grid(row=0, column=2)
         self.preview_total = ttk.Label(nav)
@@ -514,7 +643,7 @@ class App:
 
         buttons = ttk.Frame(f)
         buttons.grid(row=2, column=0, sticky="w", pady=(px(10), 0))
-        self.repeat_btn = ttk.Button(buttons, text="↻  Scheibe wiederholen  (W)",
+        self.repeat_btn = ttk.Button(buttons, text="↻  Wiederholen  (W)",
                                      style="Control.TButton", command=lambda: self._control("w"))
         self.repeat_btn.grid(row=0, column=0)
         self.back_btn = ttk.Button(buttons, text="⟲  Zurückspringen …  (B)",
@@ -534,17 +663,28 @@ class App:
 
     def _load_settings(self) -> dict:
         try:
-            return json.loads(self.settings_path.read_text(encoding="utf-8"))
+            settings = json.loads(self.settings_path.read_text(encoding="utf-8"))
         except Exception:
             return {}
+        return settings if isinstance(settings, dict) else {}
 
     def _save_settings(self) -> None:
         try:
             self.settings_path.parent.mkdir(parents=True, exist_ok=True)
             self.settings_path.write_text(json.dumps({
                 "profile": self.profile_name,
-                "template": self.template_var.get(),
+                "mode": self.mode,
+                "template": self.template_vars[MODE_MATCH].get(),
+                "single_template": self.template_vars[MODE_SINGLE].get(),
                 "port": self.port_var.get().strip(),
+                "freitext": self.freitexts,
+                "single": {"text1": self.single_text_vars[0].get(),
+                           "text2": self.single_text_vars[1].get(),
+                           "text1_first_only": self.single_first_vars[0].get(),
+                           "text2_first_only": self.single_first_vars[1].get(),
+                           "series_count": self.single_series_var.get().strip(),
+                           "shots_per_serie": self.single_shots_serie_var.get().strip(),
+                           "shots_per_sheet": self.single_sheet_var.get()},
             }, ensure_ascii=False, indent=2), encoding="utf-8")
         except OSError:
             pass
@@ -557,34 +697,45 @@ class App:
         self.template_cb.configure(values=list(self.template_paths))
         return key
 
+    def _saved_template_key(self, value):
+        """Anzeige-Text einer gemerkten Vorlage, falls es sie (noch) gibt."""
+        if value in self.template_paths:
+            return value
+        if value and Path(value).exists():
+            return self._add_template(Path(value))
+        return None
+
     def _load_initial(self, args) -> None:
         settings = self._load_settings()
 
         names = list(self.profiles.values())
         profile = next((p for p in (args.profile, settings.get("profile")) if p in names), names[0])
+        same_profile = settings.get("profile") == profile
 
         for path in sorted(self.templates_dir.glob("*.txt")):
             self._add_template(path)
-        template_key = None
-        saved_template = settings.get("template") if settings.get("profile") == profile else None
+        keys = {MODE_MATCH: None, MODE_SINGLE: None}
         if args.template:
             path = Path(args.template)
             if not path.exists() and not path.is_absolute() and (APP_DIR / path).exists():
                 path = APP_DIR / path
             if path.exists():
-                template_key = self._add_template(path)
-        elif saved_template in self.template_paths:
-            template_key = saved_template
-        elif saved_template and Path(saved_template).exists():
-            template_key = self._add_template(Path(saved_template))
+                keys[MODE_MATCH] = self._add_template(path)
+        elif same_profile:
+            keys[MODE_MATCH] = self._saved_template_key(settings.get("template"))
+        if same_profile:
+            keys[MODE_SINGLE] = self._saved_template_key(settings.get("single_template"))
 
+        if isinstance(settings.get("freitext"), dict):
+            self.freitexts = {k: str(v) for k, v in settings["freitext"].items()}
         self.profile_var.set(next(d for d, n in self.profiles.items() if n == profile))
-        self._select_profile(profile, adopt_template=template_key is None)
-        if template_key is not None:
-            self.template_var.set(template_key)
-        elif not self.template_var.get() and self.template_paths:
-            self.template_var.set(next(iter(self.template_paths)))
-        self._load_template()
+        self._select_profile(profile)
+        for mode, key in keys.items():
+            var = self.template_vars[mode]
+            if key is not None:
+                var.set(key)
+            elif not var.get() and self.template_paths:
+                var.set(next(iter(self.template_paths)))
 
         self._refresh_ports()
         # Ohne gemerkten Port: bevorzugt den USB-Seriell-Wandler statt z.B. eines eingebauten COM1
@@ -600,41 +751,66 @@ class App:
             self._fill_form(self.saved)
         else:
             self._fill_form({**DEFAULT_FORM, "shots_per_sheet": self.profile["shots_per_sheet"]})
-        self._refresh()
+        single = settings.get("single") if isinstance(settings.get("single"), dict) else {}
+        self.single_series_var.set(str(single.get("series_count") or DEFAULT_FORM["series_count"]))
+        self.single_shots_serie_var.set(str(single.get("shots_per_serie") or DEFAULT_FORM["shots_per_serie"]))
+        for i in range(2):
+            self.single_text_vars[i].set(str(single.get(f"text{i + 1}", "")))
+            self.single_first_vars[i].set(bool(single.get(f"text{i + 1}_first_only", False)))
+        self.single_sheet_var.set(self._sheet_choice(single.get("shots_per_sheet",
+                                                                self.profile["shots_per_sheet"])))
+
+        # Ein unterbrochener Wettkampf hat Vorrang vor dem zuletzt benutzten Modus
+        session = self._saved_session()
+        mode = settings.get("mode") if settings.get("mode") in MODES else MODE_MATCH
+        if session and 0 < session[1] < session[0]:
+            mode = MODE_MATCH
+        self.mode_nb.select(MODES.index(mode))
+        self._apply_mode(mode)
 
     def _fill_form(self, values: dict) -> None:
         self.club_a_var.set(values["club_a"])
         self.club_b_var.set(values["club_b"])
         self.paarungen_var.set(str(values["num_paarungen"]))
         self.start_club_var.set(values["start_club"])
-        self.sheet_var.set("1" if values["shots_per_sheet"] == 1 else "2")
+        self.sheet_var.set(self._sheet_choice(values["shots_per_sheet"]))
         self.series_var.set(str(values["series_count"]))
         self.shots_serie_var.set(str(values["shots_per_serie"]))
 
-    def _select_profile(self, name: str, adopt_template: bool = True) -> None:
+    @staticmethod
+    def _sheet_choice(value) -> str:
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            return "2"
+        return str(value) if value in SHOTS_PER_SHEET_CHOICES else "2"
+
+    def _select_profile(self, name: str) -> None:
+        """Profil laden; Vorlagen und Freitext auf die Vorschlaege dieser Disziplin setzen."""
         self.profile_name = name
         self.profile = load_profile(name, self.cp, self.config_path)
         self.saved = load_plan_state(state_path_for(self.config_path, name))
-        if adopt_template:
-            default = f"{name.lower()}_paarung.txt"
+        for mode, suffix in TEMPLATE_SUFFIX.items():
+            default = f"{name.lower()}_{suffix}.txt"
             if default in self.template_paths:
-                self.template_var.set(default)
+                self.template_vars[mode].set(default)
+        self.freitext_var.set(self.freitexts.get(name, self.profile["freitext"]))
 
     def _load_template(self) -> None:
         self.template_lines = []
         self.template_error = None
-        path = self.template_paths.get(self.template_var.get())
+        path = self.template_paths.get(self.template_vars[self.mode].get())
         if path is None:
             self.template_error = f"Keine Vorlage gefunden (Ordner {self.templates_dir})."
             return
         sample = ""
         try:
             self.template_lines = path.read_text(encoding="utf-8").splitlines()
-            sample = render(self.template_lines, SAMPLE_ROW, self.profile["line_width"])
+            sample = render(self.template_lines, sample_values(self.mode), self.profile["line_width"])
         except OSError as exc:
             self.template_error = f"Vorlage nicht lesbar: {exc}"
         except SystemExit as exc:  # printjob.render meldet unbekannte Platzhalter so
-            self.template_error = f"Vorlage passt nicht: {exc}"
+            self.template_error = f"Vorlage passt nicht zum {self._mode_title()}: {exc}"
         widest = max((len(line) for line in sample.split("\n")), default=0)
         self.card.configure(width=max(self.profile["line_width"] or 40, widest),
                             height=max(3, len(self.template_lines)))
@@ -661,6 +837,38 @@ class App:
         else:
             text = "Bitte den COM-Port des Druckers auswählen."
         self.port_hint.configure(text=text)
+
+    # ------------------------------------------------------------ Druckmodus
+
+    def _mode_title(self) -> str:
+        return "Einzeldruck" if self.mode == MODE_SINGLE else "Wettkampf"
+
+    def units(self):
+        """(Einzahl, Mehrzahl) dessen, was gerade gedruckt wird."""
+        return ("Band", "Bänder") if self.mode == MODE_SINGLE else ("Scheibe", "Scheiben")
+
+    def _on_mode_changed(self) -> None:
+        if self.run is not None:
+            return
+        mode = MODES[self.mode_nb.index("current")]
+        if mode != self.mode:
+            self._apply_mode(mode)
+            if mode == MODE_SINGLE:
+                self._focus_single_entry()
+
+    def _apply_mode(self, mode: str) -> None:
+        """Oberflaeche auf Wettkampf bzw. Einzeldruck umstellen."""
+        self.mode = mode
+        single = mode == MODE_SINGLE
+        self.template_cb.configure(textvariable=self.template_vars[mode])
+        for widget, visible in ((self.start_row, not single), (self.here_btn, not single),
+                                (self.match_view, not single), (self.single_view, single)):
+            widget.grid() if visible else widget.grid_remove()
+        self.overview_nb.tab(0, text="Einzeldruck: heute gedruckt" if single
+                             else "Übersicht: Stand für Stand")
+        self.preview_unit.configure(text=self.units()[0])
+        self._load_template()
+        self._refresh()
 
     # ------------------------------------------------ Formular -> Druckplan
 
@@ -689,9 +897,21 @@ class App:
             "club_b": club_b,
             "num_paarungen": self._read_int(self.paarungen_var, "Paarungen", LIMIT_PAARUNGEN),
             "start_club": "B" if self.start_club_var.get() == "B" else "A",
-            "shots_per_sheet": 1 if self.sheet_var.get() == "1" else 2,
+            "shots_per_sheet": int(self._sheet_choice(self.sheet_var.get())),
             "series_count": self._read_int(self.series_var, "Serien je Stand", LIMIT_SERIES),
             "shots_per_serie": self._read_int(self.shots_serie_var, "Schuss je Serie", LIMIT_SHOTS_SERIE),
+        }
+
+    def _read_single_form(self) -> dict:
+        return {
+            "text1": self.single_text_vars[0].get().strip(),
+            "text2": self.single_text_vars[1].get().strip(),
+            "text1_first_only": self.single_first_vars[0].get(),
+            "text2_first_only": self.single_first_vars[1].get(),
+            "series_count": self._read_int(self.single_series_var, "Serien", LIMIT_SERIES),
+            "shots_per_serie": self._read_int(self.single_shots_serie_var, "Schuss je Serie",
+                                              LIMIT_SHOTS_SERIE),
+            "shots_per_sheet": int(self._sheet_choice(self.single_sheet_var.get())),
         }
 
     def _refresh(self) -> None:
@@ -701,16 +921,21 @@ class App:
         self.rb_a.configure(text=self.club_a_var.get().strip() or "Verein A")
         self.rb_b.configure(text=self.club_b_var.get().strip() or "Verein B")
         try:
-            self.cfg = self._read_form()
+            if self.mode == MODE_SINGLE:
+                self.cfg = self._read_single_form()
+                self.plan = generate_single_plan(**self.cfg)
+                self.fingerprint = None
+            else:
+                self.cfg = self._read_form()
+                self.plan = generate_plan(**self.cfg)
+                self.fingerprint = plan_fingerprint(**self.cfg)
             self.config_error = None
-            self.plan = generate_plan(**self.cfg)
-            self.fingerprint = plan_fingerprint(**self.cfg)
         except ConfigError as exc:
             self.cfg = None
             self.config_error = str(exc)
             self.plan = []
             self.fingerprint = None
-        self.condensed = plan_condensed(self.plan)
+        self.condensed = plan_condensed(self.plan) if self.mode == MODE_MATCH else []
 
         self.tree.delete(*self.tree.get_children())
         for c in self.condensed:
@@ -728,6 +953,13 @@ class App:
             self.summary.configure(text=self.config_error, foreground=HINT_COLORS["error"])
         elif self.template_error:
             self.summary.configure(text=self.template_error, foreground=HINT_COLORS["error"])
+        elif self.mode == MODE_SINGLE:
+            n = len(self.plan)
+            self.summary.configure(
+                text=f"→ {n} {'Band' if n == 1 else 'Bänder'} · {self.cfg['series_count']} "
+                     f"{'Serie' if self.cfg['series_count'] == 1 else 'Serien'} à "
+                     f"{self.cfg['shots_per_serie']} Schuss",
+                foreground="")
         else:
             per_stand = self.condensed[0]["sheets"] if self.condensed else 0
             self.summary.configure(
@@ -738,7 +970,7 @@ class App:
         return self.fingerprint is not None and self.saved.get("fingerprint") == self.fingerprint
 
     def _saved_session(self):
-        """(Scheiben gesamt, erledigt) des gespeicherten Fortschritts oder None."""
+        """(Scheiben gesamt, erledigt) des gespeicherten Wettkampf-Fortschritts oder None."""
         if not all(k in self.saved for k in PLAN_KEYS):
             return None
         try:
@@ -768,9 +1000,20 @@ class App:
         start = self._start_index()
         self._show_preview(start if start is not None else self.preview_pos)
 
+    def _on_freitext_changed(self) -> None:
+        if self.profile_name:
+            self.freitexts[self.profile_name] = self.freitext_var.get()
+        if self.run is None and self.plan:
+            self._show_preview(self.preview_pos)
+
     def _start_hint(self, start):
         if not self.plan:
             return "", "normal"
+        if self.mode == MODE_SINGLE:
+            if not (self.cfg["text1"] or self.cfg["text2"]):
+                return "Freitext 1 und 2 sind leer – diese Zeilen bleiben frei.", "warn"
+            return (f"Bänder für {self.single_label()} – der Druck startet ohne weitere "
+                    f"Rückfrage."), "normal"
         total = len(self.plan)
         if start is None:
             return f"Bitte eine Scheibe zwischen 1 und {total} angeben.", "error"
@@ -803,8 +1046,8 @@ class App:
         self.start_hint.configure(text=text, foreground=HINT_COLORS[kind])
 
         session = self._saved_session()
-        if (self.run is None and session and 0 < session[1] < session[0]
-                and not self._saved_matches()):
+        if (self.run is None and self.mode == MODE_MATCH and session
+                and 0 < session[1] < session[0] and not self._saved_matches()):
             self.adopt_btn.grid()
         else:
             self.adopt_btn.grid_remove()
@@ -852,9 +1095,22 @@ class App:
 
     # ---------------------------------------------------------------- Vorschau
 
+    def single_label(self) -> str:
+        """Freitext 1/2 des Einzeldrucks als Kurztext fuer Anzeige und Protokoll."""
+        texts = [t for t in (self.cfg["text1"], self.cfg["text2"]) if t] if self.cfg else []
+        return " · ".join(texts) or "(ohne Freitext 1/2)"
+
     def sheet_desc(self, idx: int) -> str:
         r = self.plan[idx]
-        return f"Stand {r['stand']} · Serie {r['serie']} · Schuss {r['schuss']} · {r['verein']}"
+        if self.mode == MODE_SINGLE:
+            return (f"Band {idx + 1} von {len(self.plan)} · Serie {r['serie']} · "
+                    f"Schuss {r['schuss']} · {self.single_label()}")
+        return (f"Scheibe {idx + 1} von {len(self.plan)} · Stand {r['stand']} · Serie {r['serie']} · "
+                f"Schuss {r['schuss']} · {r['verein']}")
+
+    def _sheet_text(self, idx: int) -> str:
+        values = sheet_values(self.plan, idx, self.freitext_var.get().strip())
+        return render(self.template_lines, values, self.profile["line_width"])
 
     def _set_card(self, text: str) -> None:
         self.card.configure(state="normal")
@@ -877,11 +1133,15 @@ class App:
             self._suppress_preview_var = False
         self.preview_total.configure(text=f"von {len(self.plan)}")
 
-        printed = print_row_for(self.plan, idx)
-        self._set_card(render(self.template_lines, printed, self.profile["line_width"]))
-        info = self.sheet_desc(idx)
-        if not printed["verein"]:
+        self._set_card(self._sheet_text(idx))
+        info = self.sheet_desc(idx).split(" · ", 1)[1]
+        if self.mode == MODE_MATCH and not print_row_for(self.plan, idx)["verein"]:
             info += "   (Vereinsname nur auf der 1. Scheibe jeder Serie)"
+        elif self.mode == MODE_SINGLE:
+            hidden = [str(n) for n in (1, 2)
+                      if self.cfg[f"text{n}"] and not self.plan[idx][f"freitext{n}"]]
+            if hidden:
+                info += f"   (Freitext {' und '.join(hidden)} nur bei Serienbeginn)"
         self.preview_info.configure(text=info)
 
         if self.run is None:
@@ -921,16 +1181,40 @@ class App:
 
     # ------------------------------------------------------------------ Druck
 
+    def _confirm_match_start(self, start: int, dry: bool, port: str) -> bool:
+        cfg = self.cfg
+        starter = cfg["club_a"] if cfg["start_club"] == "A" else cfg["club_b"]
+        lines = [
+            f"{cfg['club_a']} vs. {cfg['club_b']} – {cfg['num_paarungen']} Paarungen, "
+            f"beginnt: {starter}",
+            f"{len(self.plan)} Scheiben auf {len(self.condensed)} Ständen, "
+            f"{cfg['shots_per_sheet']} Schuss pro Scheibe",
+            f"Freitext unten: {self.freitext_var.get().strip() or '(leer)'}",
+            "",
+            f"Start bei {self.sheet_desc(start)}",
+            "",
+            ("Testmodus – es wird NICHTS gedruckt." if dry else
+             f"Drucker: {port} · {self.profile_name} · Vorlage {self.template_vars[MODE_MATCH].get()}"),
+        ]
+        text, kind = self._start_hint(start)
+        if kind == "warn" and not dry:
+            lines += ["", text]
+        lines += ["", "Jetzt starten?"]
+        return messagebox.askyesno("Druck starten?", "\n".join(lines), parent=self.root)
+
     def _start(self) -> None:
         if self.run is not None:
             return
+        focused = self.root.focus_get()
+        if self._refresh_pending:  # z.B. Text getippt und sofort Enter: erst den Plan aktualisieren
+            self._refresh()
         if self.config_error:
             messagebox.showwarning("Eingabe prüfen", self.config_error, parent=self.root)
             return
         if self.template_error:
             messagebox.showwarning("Vorlage prüfen", self.template_error, parent=self.root)
             return
-        start = self._start_index()
+        start = self._start_index() if self.mode == MODE_MATCH else 0
         if start is None:
             messagebox.showwarning("Startscheibe prüfen",
                                    f"Bitte bei „Start ab Scheibe“ eine Zahl von 1 bis "
@@ -943,53 +1227,55 @@ class App:
                                    "Bitte den COM-Port des Druckers auswählen "
                                    "(oder den Testmodus einschalten).", parent=self.root)
             return
-
-        cfg = self.cfg
-        starter = cfg["club_a"] if cfg["start_club"] == "A" else cfg["club_b"]
-        lines = [
-            f"{cfg['club_a']} vs. {cfg['club_b']} – {cfg['num_paarungen']} Paarungen, "
-            f"beginnt: {starter}",
-            f"{len(self.plan)} Scheiben auf {len(self.condensed)} Ständen, "
-            f"{cfg['shots_per_sheet']} Schuss pro Scheibe",
-            "",
-            f"Start bei Scheibe {start + 1} von {len(self.plan)}:",
-            f"   {self.sheet_desc(start)}",
-            "",
-            ("Testmodus – es wird NICHTS gedruckt." if dry else
-             f"Drucker: {port} · {self.profile_name} · Vorlage {self.template_var.get()}"),
-        ]
-        text, kind = self._start_hint(start)
-        if kind == "warn" and not dry:
-            lines += ["", text]
-        lines += ["", "Jetzt starten?"]
-        if not messagebox.askyesno("Druck starten?", "\n".join(lines), parent=self.root):
+        sheets = [self._sheet_text(i) for i in range(len(self.plan))]
+        if not any(s.strip() for s in sheets):
+            messagebox.showwarning("Nichts zu drucken",
+                                   "Mit diesen Eingaben bleibt die Scheibe leer – bitte Namen "
+                                   "oder Freitext eintragen.", parent=self.root)
+            return
+        # Einzeldruck ohne Rueckfrage (schnell am Schiessabend), die Vorschau zeigt ja alles
+        if self.mode == MODE_MATCH and not self._confirm_match_start(start, dry, port):
             return
 
         self._save_settings()
         timing = Timing()
         printer = SimulatedPrinter(timing) if dry else SlipPrinter(port, self.profile, timing)
         state_path = state_path_for(self.config_path, self.profile_name)
-        progress = {"fingerprint": self.fingerprint, **cfg}
+        progress = {"fingerprint": self.fingerprint, **(self.cfg or {})}
 
         def save_progress(index: int) -> None:
             save_plan_state(state_path, {"index": index, **progress})
 
+        saves = self.mode == MODE_MATCH and not dry  # Einzeldruck/Testmodus speichern nichts
         self.run = PlanRun(
-            self.plan, self.template_lines, self.profile["line_width"], printer, start,
+            sheets, printer, start,
             on_event=lambda kind, data: self.events.put((kind, data)),
             ask_back=self._ask_back_blocking,
-            save_progress=None if dry else save_progress,  # Testmodus speichert nichts
+            save_progress=save_progress if saves else None,
             pause=timing.pause,
         )
-        self.run_dry = dry
+        self.run_info = {"mode": self.mode, "dry": dry, "saves": saves, "single_row": None}
         self.current_index = start
         self.run_retries = 0
         self.quit_requested = False
         self._set_running(True)
         self.progress.configure(maximum=len(self.plan), value=start)
         self._update_progress_label(start, 0)
-        self._log(f"Druck gestartet{' (Testmodus)' if dry else ' an ' + port}: "
-                  f"{cfg['club_a']} vs. {cfg['club_b']}, ab Scheibe {start + 1} von {len(self.plan)}.")
+        where = " (Testmodus)" if dry else f" an {port}"
+        if self.mode == MODE_SINGLE:
+            cfg = self.cfg
+            self.run_info["name"] = self.single_label()
+            if focused in self.single_entries:
+                self.single_focus = focused
+            series = f"{cfg['series_count']} à {cfg['shots_per_serie']}"
+            self.run_info["single_row"] = self.single_tree.insert("", 0, values=(
+                datetime.datetime.now().strftime("%H:%M"), self.run_info["name"], series,
+                len(self.plan), "läuft …" + (" (Test)" if dry else "")))
+            self._log(f"Einzeldruck{where}: {self.run_info['name']}, {series} Schuss, "
+                      f"{len(self.plan)} Bänder mit je {cfg['shots_per_sheet']} Schuss.")
+        else:
+            self._log(f"Druck gestartet{where}: {self.cfg['club_a']} vs. {self.cfg['club_b']}, "
+                      f"ab Scheibe {start + 1} von {len(self.plan)}.")
         self.worker = threading.Thread(target=self._worker_main, args=(self.run,), daemon=True)
         self.worker.start()
 
@@ -1010,6 +1296,9 @@ class App:
     def _set_running(self, running: bool) -> None:
         for w in self.inputs:
             w.state(["disabled"] if running else ["!disabled"])
+        current = self.mode_nb.index("current")
+        for i in range(len(MODES)):
+            self.mode_nb.tab(i, state="disabled" if running and i != current else "normal")
         self.start_btn.state(["disabled"] if running else ["!disabled"])
         for b in (self.repeat_btn, self.back_btn, self.quit_btn):
             b.state(["!disabled"] if running else ["disabled"])
@@ -1020,9 +1309,13 @@ class App:
         if self.run is None or self.quit_requested:
             return
         if key == "q":
-            where = ("Testmodus – es wird kein Fortschritt gespeichert." if self.run_dry else
-                     f"Der Fortschritt ist gespeichert – beim nächsten Start geht es bei "
-                     f"Scheibe {self.current_index + 1} weiter.")
+            if self.run_info["saves"]:
+                where = (f"Der Fortschritt ist gespeichert – beim nächsten Start geht es bei "
+                         f"Scheibe {self.current_index + 1} weiter.")
+            elif self.run_info["dry"]:
+                where = "Testmodus – es wird kein Fortschritt gespeichert."
+            else:
+                where = "Die restlichen Bänder werden nicht gedruckt."
             if not messagebox.askyesno("Druck beenden?", f"Druck jetzt beenden?\n\n{where}",
                                        parent=self.root):
                 return
@@ -1033,13 +1326,13 @@ class App:
             return  # Abbruch laeuft schon - erst die naechste Scheibe abwarten
         else:
             self._set_banner("Breche den Druck ab …", "warn",
-                             "Die Scheibe wird ausgeworfen.")
+                             f"{self.units()[0]} wird ausgeworfen.")
         self.repeat_btn.state(["disabled"])
         self.back_btn.state(["disabled"])
         self.run.request(key)
 
     def _update_progress_label(self, done: int, retries: int) -> None:
-        text = f"{done} von {len(self.plan)} Scheiben erledigt"
+        text = f"{done}/{len(self.plan)} {self.units()[1]} erledigt"
         if retries:
             text += f" · {retries} Wiederholung{'en' if retries != 1 else ''}"
         self.progress_label.configure(text=text)
@@ -1065,17 +1358,17 @@ class App:
         idx = data["index"]
         self.current_index = idx
         self.run_retries = data["retries"]
+        unit = self.units()[0]
+        detail = f"{self.sheet_desc(idx)}\n{unit} einlegen – Druck und Auswurf laufen automatisch."
         row = self.plan[idx]
         prev = self.plan[idx - 1] if idx > 0 else None
-        detail = (f"Scheibe {idx + 1} von {len(self.plan)}: {self.sheet_desc(idx)}\n"
-                  f"Scheibe einlegen – Druck und Auswurf laufen automatisch.")
-        if prev is None or prev["stand"] != row["stand"]:
+        if self.mode == MODE_MATCH and (prev is None or prev["stand"] != row["stand"]):
             if prev is None or prev["verein"] != row["verein"]:
                 self._set_banner(f"NEUER STAND {row['stand']}  –  {row['verein']}", "verein", detail)
             else:
                 self._set_banner(f"NEUER STAND {row['stand']}", "stand", detail)
         else:
-            self._set_banner(f"Scheibe {idx + 1} einlegen", "info", detail)
+            self._set_banner(f"{unit} {idx + 1} einlegen", "info", detail)
         if not self.quit_requested:
             self.repeat_btn.state(["!disabled"])
             self.back_btn.state(["!disabled"])
@@ -1091,7 +1384,8 @@ class App:
 
     def _ev_ask_back(self, data: dict) -> None:
         self.pending_reply = data["reply"]
-        self._set_banner("Scheibe ausgeworfen", "warn", "Wie weit soll zurückgesprungen werden?")
+        self._set_banner(f"{self.units()[0]} ausgeworfen", "warn",
+                         "Wie weit soll zurückgesprungen werden?")
         n = 1
         try:
             n = BackJumpDialog(self, data["index"]).result
@@ -1099,36 +1393,63 @@ class App:
             self.pending_reply = None
             data["reply"].put(n)
 
+    def _set_single_status(self, text: str, problem: bool = False) -> None:
+        iid = self.run_info.get("single_row")
+        if iid and self.single_tree.exists(iid):
+            self.single_tree.set(iid, "status", text + (" (Test)" if self.run_info["dry"] else ""))
+            self.single_tree.item(iid, tags=("problem",) if problem else ())
+
     def _ev_finished(self, result: dict) -> None:
-        dry = self.run_dry
-        self._end_run()
-        prefix = "Testmodus: " if dry else ""
-        done_text = (f"{result['printed']} Scheibe(n) gedruckt, {result['retries']} Wiederholung(en).")
-        if result["complete"]:
+        info = self.run_info
+        prefix = "Testmodus: " if info["dry"] else ""
+        unit, units = self.units()
+        done_text = (f"{result['printed']} {units if result['printed'] != 1 else unit} gedruckt, "
+                     f"{result['retries']} Wiederholung(en).")
+        if info["mode"] == MODE_SINGLE:
+            if result["complete"]:
+                self._set_single_status(f"fertig ({result['retries']} Wdh.)" if result["retries"]
+                                        else "fertig")
+                self._set_banner(f"{prefix}Fertig – {info['name']}: {result['total']} "
+                                 f"{units if result['total'] != 1 else unit}", "ok",
+                                 "Nächste Person: Text ändern und Enter drücken.")
+            else:
+                self._set_single_status(f"beendet nach {result['index']} von {result['total']}",
+                                        problem=True)
+                self._set_banner(f"{prefix}Einzeldruck beendet nach {result['index']} von "
+                                 f"{result['total']} Bändern", "warn", done_text)
+        elif result["complete"]:
             self._set_banner(f"{prefix}Fertig – alle {result['total']} Scheiben gedruckt", "ok",
                              done_text)
         else:
-            nxt = f"Beim nächsten Start geht es bei Scheibe {result['index'] + 1} weiter." if not dry else ""
+            nxt = (f"Beim nächsten Start geht es bei Scheibe {result['index'] + 1} weiter."
+                   if info["saves"] else "")
             self._set_banner(f"{prefix}Druck beendet bei Scheibe {result['index'] + 1} von "
                              f"{result['total']}", "warn", f"{done_text} {nxt}".strip())
         self._log(f"Druck beendet: {done_text} Stand: {result['index']}/{result['total']}.")
+        self._end_run()
 
     def _ev_failed(self, data: dict) -> None:
+        self._set_single_status("Fehler", problem=True)
+        saved_note = (" Der Fortschritt bis zur letzten fertigen Scheibe ist gespeichert."
+                      if self.run_info.get("saves") else "")
         self._end_run()
         self._set_banner("Fehler beim Drucken", "error", data["text"])
         self._log(f"FEHLER: {data['text']}")
         messagebox.showerror(
             "Fehler beim Drucken",
-            f"{data['text']}\n\nBitte COM-Port, Kabel und Drucker prüfen. Der Fortschritt bis zur "
-            f"letzten fertigen Scheibe ist gespeichert.", parent=self.root)
+            f"{data['text']}\n\nBitte COM-Port, Kabel und Drucker prüfen.{saved_note}",
+            parent=self.root)
 
     def _end_run(self) -> None:
+        single = self.run_info.get("mode") == MODE_SINGLE
         self.run = None
         self.worker = None
         self.quit_requested = False
         self._set_running(False)
         self.saved = load_plan_state(state_path_for(self.config_path, self.profile_name))
         self._refresh()
+        if single:  # gleich bereit fuer die naechste Person
+            self._focus_single_entry()
 
     # ------------------------------------------------------------- Allgemein
 
@@ -1167,7 +1488,8 @@ class App:
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("port", nargs="?", help="COM-Port vorbelegen, z.B. COM5")
-    parser.add_argument("template", nargs="?", help="Vorlage vorbelegen, z.B. templates\\lp_paarung.txt")
+    parser.add_argument("template", nargs="?",
+                        help="Wettkampf-Vorlage vorbelegen, z.B. templates\\lp_paarung.txt")
     parser.add_argument("--profile", help="Profil aus config.ini vorbelegen (z.B. LP oder LG)")
     parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="Pfad zur config.ini")
     parser.add_argument("--dry-run", action="store_true", help="Im Testmodus (ohne Drucker) starten")

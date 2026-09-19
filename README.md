@@ -25,9 +25,10 @@ Schnittstelle — gedacht z. B. für automatisiertes fortlaufendes Durchnummerie
 | `build_exe.bat` | Baut aus `print_gui.py` eine einzelne, per Doppelklick startbare `TMU950_Druck.exe` (siehe Abschnitt 11) - kein Python/pip mehr noetig, um die Anwendung zu benutzen |
 | `version_info.txt` | Datei-Eigenschaften (Version, Beschreibung) fuer die `.exe`, von `build_exe.bat` eingebunden |
 | `config.ini` | Profile `LP` (Luftpistole) und `LG` (Luftgewehr): Baudrate, Eject-Length, Zeilenbreite. (Die `[counter:...]`-Abschnitte sind Altlasten des frueheren, inzwischen ersetzten Zaehler-Systems und werden von `print_session.py` nicht mehr gelesen.) |
-| `templates/lp_paarung.txt`, `templates/lg_paarung.txt` | Die tatsaechlich verwendeten Vorlagen (Verein/Paarung/Stand/Serie/Schuss) |
+| `templates/lp_paarung.txt`, `templates/lg_paarung.txt` | Die Vorlagen für den Wettkampf (Verein/Paarung/Stand/Serie/Schuss/Freitext) |
+| `templates/lp_einzel.txt`, `templates/lg_einzel.txt` | Die Vorlagen für den Einzeldruck am Schießabend (Freitext 1/2, Serie, Schuss, Freitext unten, siehe Abschnitt 7a) |
 | `templates/lp_beispiel.txt`, `templates/lg_beispiel.txt` | Alte Beispiel-Vorlagen aus dem fruehen Zaehler-System - nicht mehr in Benutzung, nur als Referenz |
-| `state/` | Wird automatisch angelegt, enthaelt pro Profil den gespeicherten Druckfortschritt (`lp_plan_state.json`/`lg_plan_state.json`) sowie die zuletzt in der Oberfläche gewählte Disziplin/Vorlage/COM-Port (`gui_settings.json`) |
+| `state/` | Wird automatisch angelegt, enthaelt pro Profil den gespeicherten Druckfortschritt (`lp_plan_state.json`/`lg_plan_state.json`) sowie die zuletzt in der Oberfläche gewählten Einstellungen – Disziplin, Druckmodus, Vorlagen, Freitext, COM-Port (`gui_settings.json`) |
 | `print_counter.py`, `counter_state.py` | **Alt/unbenutzt**: fruehere Batch-/Zaehler-Version, vor der Umstellung auf das Stand/Serie/Schuss-Modell. Bleibt nur als Referenz liegen. |
 
 ## 1. Hardware: USB-Seriell-Wandler
@@ -152,7 +153,7 @@ nur auf dem tatsächlichen Ausdruck bleibt er auf den Folge-Scheiben leer.
 
 Die Vorlagen `templates/lp_paarung.txt` / `templates/lg_paarung.txt` nutzen
 dafür die Platzhalter `{verein}`, `{name}` (das Paarungs-Label,
-z. B. "Paarung 1 - N"), `{stand}`, `{serie}`, `{schuss}`:
+z. B. "Paarung 1 - N"), `{stand}`, `{serie}`, `{schuss}` und `{freitext}`:
 
 ```
 <<{verein}
@@ -160,13 +161,21 @@ z. B. "Paarung 1 - N"), `{stand}`, `{serie}`, `{schuss}`:
 Stand:  {stand}
 Serie:  {serie}
 Schuss: {schuss}
-LP Auflage
+{freitext}
 ```
+
+`{freitext}` ist die frei wählbare Zeile, z. B. „LP Auflage“. Sie wird in der
+Oberfläche direkt eingetippt (Feld „Freitext unten“, pro Disziplin gemerkt), in der
+Konsolen-Variante per `--freitext`. Der Vorschlag beim ersten Start kommt aus
+`freitext = ...` im `[profile:...]`-Abschnitt der `config.ini`. Bleibt das Feld
+leer, bleibt die Zeile auf der Scheibe leer.
 
 Eine Zeile, die mit `<<` beginnt, wird **linksbündig** gedruckt (Präfix wird
 entfernt) — alle anderen Zeilen werden wie gehabt **rechtsbündig** auf
 `line_width` (aus `config.ini`) ausgerichtet. Feste Textzeilen ohne
-Platzhalter (wie `LP Auflage`) bleiben unverändert stehen.
+Platzhalter bleiben unverändert stehen, leere Zeilen schieben den Rest nach
+unten. In jeder Vorlage stehen außerdem `{nr}`/`{anzahl}` (laufende
+Scheibennummer/Gesamtzahl) und `{date}` (heutiges Datum) zur Verfügung.
 
 ## 7. Wettkampf drucken
 
@@ -180,14 +189,17 @@ python print_gui.py
 Es öffnet sich ein Fenster, das von oben nach unten ausgefüllt wird:
 
 1. **Drucker** – Disziplin (Profil `LP`/`LG` aus `config.ini`), Vorlage
-   (wird passend zur Disziplin vorgewählt), COM-Port (die Liste zeigt die
-   angeschlossenen Anschlüsse, „Suchen“ aktualisiert sie; ein
+   (wird passend zu Disziplin und Druckmodus vorgewählt), COM-Port (die Liste
+   zeigt die angeschlossenen Anschlüsse, „Suchen“ aktualisiert sie; ein
    USB-Seriell-Wandler wird automatisch bevorzugt). Mit **Testmodus** läuft
    alles ohne Drucker durch – nichts wird gedruckt und kein Fortschritt
    gespeichert.
-2. **Wettkampf** – Verein A/B, Anzahl Paarungen, wer an Stand 1 beginnt,
-   Schuss pro Scheibe, Serien je Stand, Schuss je Serie. Darunter steht
-   sofort, wie viele Scheiben/Stände das ergibt.
+2. **Was wird gedruckt?** – Register **Wettkampf**: Verein A/B, Anzahl
+   Paarungen, wer an Stand 1 beginnt, Schuss pro Scheibe (1, 2 oder 5),
+   Serien je Stand à Schuss je Serie. Das Register **Einzeldruck** ist für
+   Bänder einzelner Personen am Schießabend (siehe Abschnitt 7a). Darunter
+   für beide das Feld **Freitext unten** (z. B. „LP Auflage“, siehe Abschnitt 6)
+   und sofort, wie viele Scheiben/Stände das ergibt.
 3. **Drucken** – ab welcher Scheibe gedruckt wird (normalerweise 1, bei einem
    unterbrochenen Druck automatisch die nächste offene Scheibe, siehe
    Abschnitt 10), dann **„Druck starten“**. Vor dem Start kommt noch eine
@@ -196,12 +208,12 @@ Es öffnet sich ein Fenster, das von oben nach unten ausgefüllt wird:
 Rechts aktualisieren sich bei jeder Änderung die **Stand-für-Stand-Übersicht**
 (Status erledigt/Start/offen) und die **Vorschau**, die jede Scheibe genau so
 zeigt, wie sie gedruckt wird (siehe Abschnitt 9). Die zuletzt gedruckten
-Wettkampf-Werte sowie Disziplin, Vorlage und COM-Port werden beim nächsten
-Start automatisch vorbelegt.
+Wettkampf-Werte sowie Disziplin, Druckmodus, Vorlagen, Freitext und COM-Port
+werden beim nächsten Start automatisch vorbelegt.
 
 Während des Drucks zeigt der **Druckstatus** unten rechts, welche Scheibe als
 Nächstes eingelegt werden muss – bei einem **neuen Stand** farbig hervorgehoben
-(gelb, wenn dabei auch der Verein wechselt). Die Knöpfe „Scheibe wiederholen“,
+(gelb, wenn dabei auch der Verein wechselt). Die Knöpfe „Wiederholen“,
 „Zurückspringen …“ und „Druck beenden“ entsprechen den Tasten `w`/`b`/`q`
 (siehe Abschnitt 8) und funktionieren auch per Tastatur. Das Register
 „Protokoll“ listet alle Ereignisse mit Uhrzeit.
@@ -232,6 +244,48 @@ C:\Windows\pyw.exe "D:\...\print_gui.py" --profile LP
 
 Der Anzeigename einer Disziplin in der Auswahlliste kommt aus `title = ...`
 im jeweiligen `[profile:...]`-Abschnitt der `config.ini`.
+
+## 7a. Einzeldruck am Schießabend
+
+Für einzelne Schützen schnell Bänder drucken, ohne sie von Hand zu
+beschriften: im Abschnitt „Was wird gedruckt?“ das Register **Einzeldruck**
+wählen und einstellen:
+
+- **Freitext 1** (Zeile 1, links) und **Freitext 2** (Zeile 2, rechts) –
+  beliebige Texte, z. B. Verein und Name der Person. Für jedes der beiden
+  Felder einzeln wählbar: **„nur bei Serienbeginn“** (nur auf dem ersten
+  Band jeder Serie) oder – ohne Häkchen – auf jedem Band.
+- **Serien** à **Schuss** je Serie (wie ein einzelner Stand im Wettkampf)
+- **Schuss pro Scheibe** (1, 2 oder 5) – daraus ergibt sich die Anzahl der
+  Bänder; die Schuss-Nummern beginnen in jeder Serie neu, z. B. 2 Serien à
+  10 Schuss mit 5 Schuss pro Scheibe = 4 Bänder: Serie 1 `1-5`, `6-10`,
+  Serie 2 `1-5`, `6-10`
+- darunter wie im Wettkampf **Freitext unten** (z. B. „LP Auflage“)
+
+Die Vorschau zeigt jedes Band genau so, wie es gedruckt wird. **Enter in
+Freitext 1 oder 2** (oder „Druck starten“) druckt sofort – ohne Rückfrage,
+damit es am Schießabend schnell geht. Danach steht der Cursor wieder in dem
+Feld, aus dem gestartet wurde, der Text ist markiert: einfach den nächsten
+Namen tippen und Enter. Rechts listet „Einzeldruck: heute gedruckt“ alle
+Drucke dieser Sitzung mit Uhrzeit, Freitext 1/2, Serien, Anzahl Bänder und
+Status. Wiederholen/Zurückspringen/Beenden funktionieren wie im Wettkampf;
+ein Fortschritt wird beim Einzeldruck nicht gespeichert (bei einem Abbruch
+einfach die restliche Anzahl neu drucken).
+
+Das Layout steht in `templates/lp_einzel.txt` bzw. `templates/lg_einzel.txt`
+(Platzhalter `{freitext1}`, `{freitext2}`, `{serie}`, `{schuss}`,
+`{freitext}` für „Freitext unten“, dazu `{nr}`/`{anzahl}`/`{date}`) –
+standardmäßig an denselben Stellen wie Verein/Paarung/Serie/Schuss auf den
+Wettkampf-Scheiben, die Stand-Zeile bleibt frei:
+
+```
+<<{freitext1}
+{freitext2}
+
+Serie:  {serie}
+Schuss: {schuss}
+{freitext}
+```
 
 ### Alternativ: Konsolen-Variante `print_session.py`
 
@@ -277,7 +331,8 @@ Wichtige Optionen:
 --start-club A|B                  wer an Stand 1 beginnt
 --series-count N                  Serien je Stand (Default 4)
 --shots-per-serie N                Schuss je Serie (Default 10)
---shots-per-sheet 1|2             Schuss pro Scheibe
+--shots-per-sheet 1|2|5           Schuss pro Scheibe
+--freitext TEXT                   Freitext-Zeile, z. B. "LP Auflage" (Default: freitext aus config.ini)
 --start-index N                   an dieser Scheibe (1-basiert) statt beim gespeicherten Fortschritt beginnen
 --no-save                         Fortschritt nicht speichern (zum Testen)
 --simple-input                    einfache Tipp-und-Enter-Abfrage statt Pfeiltasten-Eingabemaske
